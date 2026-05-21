@@ -30,8 +30,9 @@
         const groqUrl = 'https://api.groq.com/openai/v1/chat/completions';
         
         let currentChatId = null;
-        let uploadedFileContent = ""; 
-        let currentMode = "chat"; // الوضع الافتراضي
+        let uploadedTextContent = ""; 
+        let uploadedImageContent = ""; 
+        let currentMode = "chat"; 
 
         // تسجيل الدخول
         window.loginWithGoogle = async () => {
@@ -64,12 +65,12 @@
             document.querySelectorAll('.nav-tab').forEach(tab => tab.classList.remove('active'));
             if (mode === 'chat') {
                 document.getElementById('chatTab').classList.add('active');
-                document.getElementById('modelTitle').innerText = "Keo-Agent-1.0 (Llama 3.3) ▾";
+                document.getElementById('modelTitle').innerText = "Keo-Agent-1.0 (Vision & Text) ▾";
                 document.getElementById('welcomeSub').innerText = "Interact with Keo Studio AI and explore the boundless creative world.";
             } else {
                 document.getElementById('agentTab').classList.add('active');
                 document.getElementById('modelTitle').innerText = "Keo Developer Agent (Full Permissions) ⚡";
-                document.getElementById('welcomeSub').innerText = "مرحباً بك في وضع الوكيل الذكي. هنا يمكنك رفع الأكواد، وطلب الحلول الشاملة بصلاحيات كاملة.";
+                document.getElementById('welcomeSub').innerText = "مرحباً بك في وضع الوكيل الذكي. هنا يمكنك رفع الأكواد والصور، وطلب الحلول الشاملة بصلاحيات كاملة.";
             }
             createNewChat();
         };
@@ -111,8 +112,7 @@
 
         window.createNewChat = () => {
             currentChatId = null;
-            uploadedFileContent = "";
-            document.getElementById('fileBadge').style.display = 'none';
+            removeUploadedFile();
             document.getElementById('chatMessages').innerHTML = '';
             document.getElementById('welcomeScreen').style.display = 'flex';
             document.getElementById('chatMessages').style.display = 'none';
@@ -136,26 +136,51 @@
             }
         }
 
-        // رفع الملفات
+        // رفع الملفات والصور مع فحص الحجم المخصص لكل نوع
         window.triggerFileUpload = () => document.getElementById('hiddenFileInput').click();
         window.handleFileUpload = (event) => {
             const file = event.target.files[0];
             if (!file) return;
+
+            const isImage = file.type.startsWith('image/');
+            const maxAllowedSize = isImage ? (4 * 1024 * 1024) : (250 * 1024); // 4MB للصور، 250KB للأكواد
+
+            if (file.size > maxAllowedSize) {
+                const sizeStr = isImage ? "4 ميجابايت" : "250 كيلوبايت";
+                alert(`❌ الملف حجمه كبير جداً.\nالحد الأقصى المسموح به لهذا النوع هو ${sizeStr} لتجنب أخطاء السيرفر.`);
+                event.target.value = ""; 
+                return;
+            }
+
             const reader = new FileReader();
             reader.onload = function(e) {
-                uploadedFileContent = e.target.result;
-                document.getElementById('fileBadgeText').innerText = file.name;
+                if (isImage) {
+                    uploadedImageContent = e.target.result;
+                    uploadedTextContent = "";
+                } else {
+                    uploadedTextContent = e.target.result;
+                    uploadedImageContent = "";
+                }
+                const icon = isImage ? '🖼️' : '📄';
+                document.getElementById('fileBadgeText').innerText = `${icon} ${file.name}`;
                 document.getElementById('fileBadge').style.display = 'flex';
             };
-            reader.readAsText(file);
+            
+            if (isImage) {
+                reader.readAsDataURL(file); // تحويل الصورة لـ Base64
+            } else {
+                reader.readAsText(file); // قراءة الكود كنص
+            }
         };
+        
         window.removeUploadedFile = () => {
-            uploadedFileContent = "";
+            uploadedTextContent = "";
+            uploadedImageContent = "";
             document.getElementById('fileBadge').style.display = 'none';
             document.getElementById('hiddenFileInput').value = "";
         };
 
-        // إرسال الرسالة لـ Groq
+        // إرسال الرسالة لـ Groq ودعم الصور (Multimodal)
         window.sendMessage = async () => {
             const userInput = document.getElementById('userInput');
             const messageText = userInput.value.trim();
@@ -167,15 +192,10 @@
             const chatMessages = document.getElementById('chatMessages');
             chatMessages.style.display = 'flex';
 
-            let finalPromptToSend = messageText;
-            if (uploadedFileContent) {
-                finalPromptToSend = `[User Uploaded Data/Code Source]:\n${uploadedFileContent}\n\n[User Directive]:\n${messageText}`;
-            }
-
             appendMessageElement(messageText, 'user');
             userInput.value = '';
-            removeUploadedFile();
 
+            // حفظ الرسالة في الفايربيز
             if (!currentChatId) {
                 const newChatRef = push(ref(db, `users/${user.uid}/chats`));
                 currentChatId = newChatRef.key;
@@ -184,17 +204,37 @@
                     createdAt: Date.now()
                 });
             }
-
             const msgListRef = ref(db, `users/${user.uid}/chats/${currentChatId}/messages`);
             push(msgListRef, { text: messageText, sender: 'user' });
 
-            const loadingId = appendMessageElement('جاري استدعاء المعالج والتفكير بالحلول...', 'bot-loading');
+            const loadingId = appendMessageElement('جاري استدعاء المعالج ورؤية البيانات...', 'bot-loading');
 
-            // إجبار الموديل على التفكير العميق باستخدام علامات <think>
+            // إعداد التعليمات الأساسية مع إجبار الموديل على التفكير
             let systemInstruction = "You are Keo Studio AI, a high-fidelity intelligence assistant created by Karim Hussein. You MUST always output your step-by-step reasoning inside <think> and </think> tags first, then output your final response.";
             if(currentMode === "agent") {
-                systemInstruction = "You are the Ultimate Keo Developer Agent. You have root-level permissions to design advanced systems, manage workflows, read uploaded source codes, and fix client scripts. You MUST always output your step-by-step reasoning inside <think> and </think> tags first, then output your final response.";
+                systemInstruction = "You are the Ultimate Keo Developer Agent. You have root-level permissions to design advanced systems, manage workflows, read uploaded source codes, and analyze images. You MUST always output your step-by-step reasoning inside <think> and </think> tags first, then output your final response.";
             }
+
+            // إعداد المحتوى (صورة أو نص) والتحويل التلقائي للموديل الداعم للرؤية
+            let userContent;
+            let activeModel = "llama-3.3-70b-versatile"; // الموديل الافتراضي السريع للنصوص
+
+            if (uploadedImageContent) {
+                // تبديل الموديل أوتوماتيكياً لموديل الرؤية البصرية عند رفع صورة
+                activeModel = "meta-llama/llama-4-scout-17b-16e-instruct"; 
+                userContent = [
+                    { "type": "text", "text": messageText },
+                    { "type": "image_url", "image_url": { "url": uploadedImageContent } }
+                ];
+            } else {
+                let promptText = messageText;
+                if (uploadedTextContent) {
+                    promptText = `[User Uploaded Data/Code Source]:\n${uploadedTextContent}\n\n[User Directive]:\n${messageText}`;
+                }
+                userContent = promptText;
+            }
+
+            removeUploadedFile(); // تنظيف خانة الرفع بعد الإرسال
 
             try {
                 const response = await fetch(groqUrl, {
@@ -204,9 +244,10 @@
                         'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({
-                        model: "llama-3.3-70b-versatile", // الموديل المستقر لتفادي خطأ 400
+                        model: activeModel,
                         messages: [
-                            { "role": "user", "content": `${systemInstruction}\n\nUser Question: ${finalPromptToSend}` }
+                            { "role": "system", "content": systemInstruction },
+                            { "role": "user", "content": userContent }
                         ],
                         temperature: 0.6
                     })
@@ -224,7 +265,7 @@
                 }
             } catch (error) {
                 if(document.getElementById(loadingId)) document.getElementById(loadingId).remove();
-                appendMessageElement('فشل الاتصال الخارجي. تأكد من ثبات الاتصال بالإنترنت لديك.', 'system-error');
+                appendMessageElement('فشل إرسال البيانات. قد يكون حجم الصورة كبيراً جداً على خوادم المعالجة، حاول تقليل حجم الصورة أو التأكد من الإنترنت.', 'system-error');
             }
         };
 
@@ -334,7 +375,7 @@
         .thinking-body.expanded { display: block; }
         .final-text { margin-top: 10px; }
 
-        /* صندوق الإدخال العائم */
+        /* صندوق الإدخال العائم والبادجات */
         .input-wrapper-floating { position: absolute; bottom: 28px; left: 22%; right: 22%; display: flex; flex-direction: column; gap: 8px; }
         .input-container { background: var(--pill-input-bg); border: 1px solid var(--border-color); border-radius: 28px; padding: 6px 14px; display: flex; align-items: center; gap: 12px; }
         .input-container input { flex: 1; background: transparent; border: none; color: var(--text-color); padding: 12px 4px; font-size: 14.5px; outline: none; }
@@ -344,8 +385,9 @@
         
         .send-icon-btn { background: var(--text-color); color: var(--bg-main); border: none; width: 34px; height: 34px; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 15px; font-weight: bold; }
 
-        .file-badge { background: #1c1c1c; border: 1px solid var(--border-color); align-self: flex-start; padding: 6px 14px; border-radius: 14px; display: none; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted); margin-right: 10px; }
-        .file-badge button { background: transparent; border: none; color: #ff5252; cursor: pointer; font-weight: bold; }
+        /* لاحظ تحديث التنسيق ليعرض البادج بشكل جذاب مع الأيقونة */
+        .file-badge { background: #1c1c1c; border: 1px solid var(--border-color); align-self: flex-start; padding: 6px 14px; border-radius: 14px; display: none; align-items: center; gap: 8px; font-size: 13px; color: var(--text-muted); margin-right: 10px; }
+        .file-badge button { background: transparent; border: none; color: #ff5252; cursor: pointer; font-weight: bold; font-size: 14px; }
     </style>
 </head>
 <body>
@@ -389,7 +431,7 @@
             
             <div class="top-bar">
                 <button class="toggle-side" onclick="toggleSidebar()">☰</button>
-                <div class="model-selector" id="modelTitle">Keo-Agent-1.0 (Llama 3.3) ▾</div>
+                <div class="model-selector" id="modelTitle">Keo-Agent-1.0 (Vision & Text) ▾</div>
                 <div style="width:20px;"></div>
             </div>
             
@@ -402,13 +444,13 @@
 
             <div class="input-wrapper-floating">
                 <div class="file-badge" id="fileBadge">
-                    📄 <span id="fileBadgeText">code.js</span>
+                    <span id="fileBadgeText">🖼️ image.png</span>
                     <button onclick="removeUploadedFile()">✕</button>
                 </div>
                 
                 <div class="input-container">
-                    <input type="file" id="hiddenFileInput" style="display: none;" accept=".txt,.json,.csv,.js,.html,.css,.py" onchange="handleFileUpload(event)">
-                    <button class="icon-btn-left" onclick="triggerFileUpload()" title="إضافة ملف سياق/كود">+</button>
+                    <input type="file" id="hiddenFileInput" style="display: none;" accept=".txt,.json,.csv,.js,.html,.css,.py,image/png,image/jpeg,image/jpg,image/webp" onchange="handleFileUpload(event)">
+                    <button class="icon-btn-left" onclick="triggerFileUpload()" title="إضافة صورة أو ملف كود">+</button>
                     
                     <input type="text" id="userInput" placeholder="How can I help you today?" onkeypress="handleKeyPress(event)">
                     
