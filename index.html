@@ -25,11 +25,12 @@
         const db = getDatabase(app);
         const provider = new GoogleAuthProvider();
 
-        const n8nUrl = 'https://kareem49.app.n8n.cloud/webhook/v1/chat';
+        // الـ API Key بتاع Groq اللي أنت بعته
+        const groqApiKey = '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';
+        const groqUrl = 'https://api.groq.com/openai/v1/chat/completions';
         
         let currentChatId = null;
 
-        // الدخول بجوجل
         window.loginWithGoogle = async () => {
             try {
                 const result = await signInWithPopup(auth, provider);
@@ -45,32 +46,21 @@
             const userRef = ref(db, 'users/' + user.uid);
             const snapshot = await get(userRef);
             if (!snapshot.exists()) {
-                const generatedApiKey = 'keo_live_' + Math.random().toString(36).substr(2, 16);
                 await set(userRef, {
                     uid: user.uid,
                     email: user.email,
-                    apiKey: generatedApiKey,
-                    totalCredits: 100,
-                    usedCredits: 0
+                    createdAt: Date.now()
                 });
             }
         }
 
-        // مراقبة حالة المستخدم وجلب تاريخ الشاتات
         onAuthStateChanged(auth, (user) => {
             if (user) {
                 document.getElementById('authScreen').style.display = 'none';
                 document.getElementById('appContainer').style.display = 'flex';
                 document.getElementById('userNameDisplay').innerText = user.displayName || "Kimo";
+                document.getElementById('userNameDisplayBody').innerText = user.displayName || "Kimo";
                 
-                // جلب الـ API Key وعرضه
-                get(ref(db, 'users/' + user.uid)).then(snapshot => {
-                    if(snapshot.exists()) {
-                        document.getElementById('apiKeyVal').innerText = snapshot.val().apiKey;
-                    }
-                });
-
-                // تحميل قائمة المحادثات في القائمة الجانبية
                 const chatsRef = ref(db, `users/${user.uid}/chats`);
                 onValue(chatsRef, (snapshot) => {
                     const chatsList = document.getElementById('previousChats');
@@ -92,7 +82,6 @@
             }
         });
 
-        // إنشاء شات جديد
         window.createNewChat = () => {
             currentChatId = null;
             document.getElementById('chatMessages').innerHTML = '';
@@ -102,7 +91,6 @@
             activeItems.forEach(item => item.classList.remove('active'));
         };
 
-        // تحميل شات قديم
         async function loadChat(chatId) {
             currentChatId = chatId;
             document.getElementById('welcomeScreen').style.display = 'none';
@@ -120,7 +108,6 @@
             }
         }
 
-        // إرسال الرسالة
         window.sendMessage = async () => {
             const userInput = document.getElementById('userInput');
             const messageText = userInput.value.trim();
@@ -128,14 +115,13 @@
 
             if (!messageText || !user) return;
 
-            // إخفاء واجهة الترحيب لو ده أول بوست في الشات
             document.getElementById('welcomeScreen').style.display = 'none';
-            document.getElementById('chatMessages').style.display = 'flex';
+            const chatMessages = document.getElementById('chatMessages');
+            chatMessages.style.display = 'flex';
 
             appendMessageElement(messageText, 'user');
             userInput.value = '';
 
-            // إذا كان شات جديد، ننشئ له مكان في الداتا بيز أولاً
             if (!currentChatId) {
                 const newChatRef = push(ref(db, `users/${user.uid}/chats`));
                 currentChatId = newChatRef.key;
@@ -145,37 +131,41 @@
                 });
             }
 
-            // حفظ رسالة المستخدم في Firebase
             const msgListRef = ref(db, `users/${user.uid}/chats/${currentChatId}/messages`);
             push(msgListRef, { text: messageText, sender: 'user' });
 
-            const loadingId = appendMessageElement('جاري التفكير...', 'bot-loading');
-
-            // جلب الـ API Key للـ Request
-            const userSnapshot = await get(ref(db, 'users/' + user.uid));
-            const apiKey = userSnapshot.val().apiKey;
+            const loadingId = appendMessageElement('Keo Studio يفكر...', 'bot-loading');
 
             try {
-                const response = await fetch(n8nUrl, {
+                // الاتصال المباشر بـ Groq بالـ API الجديد بتاعك
+                const response = await fetch(groqUrl, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey },
-                    body: JSON.stringify({ message: messageText, uid: user.uid })
+                    headers: {
+                        'Authorization': `Bearer ${groqApiKey}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        model: "llama-3.3-70b-versatile", // موديل لاما العملاق السريع
+                        messages: [
+                            { "role": "system", "content": "You are Keo Studio AI, a highly advanced artificial intelligence created by Karim Hussein." },
+                            { "role": "user", "content": messageText }
+                        ]
+                    })
                 });
 
                 const data = await response.json();
                 document.getElementById(loadingId).remove();
 
-                if (data.status === 'success' || data.reply) {
-                    const aiReply = data.reply;
+                if (data.choices && data.choices[0]) {
+                    const aiReply = data.choices[0].message.content;
                     appendMessageElement(aiReply, 'bot');
-                    // حفظ رد البوت في Firebase
                     push(msgListRef, { text: aiReply, sender: 'bot' });
                 } else {
-                    appendMessageElement('خطأ من السيرفر: ' + data.message, 'system-error');
+                    appendMessageElement('خطأ من سيرفر Groq: تأكد من صلاحية الكي الخاص بك.', 'system-error');
                 }
             } catch (error) {
                 document.getElementById(loadingId).remove();
-                appendMessageElement('فشل الاتصال بـ n8n.', 'system-error');
+                appendMessageElement('حدث خطأ أثناء الاتصال بالذكاء الاصطناعي.', 'system-error');
             }
         };
 
@@ -196,88 +186,58 @@
 
     <style>
         :root {
-            --bg-main: #f9f9f9;
-            --bg-sidebar: #f3f3f3;
-            --border-color: #e2e2e2;
-            --text-color: #111111;
-            --text-muted: #666666;
-            --accent-color: #000000;
+            --bg-main: #161616;
+            --bg-sidebar: #1a1a1a;
+            --border-color: #262626;
+            --text-color: #ffffff;
+            --text-muted: #8e8e8e;
         }
-
-        /* ستايل الدارك مود الفخم اللي في الصورة */
-        @media (prefers-color-scheme: dark) {
-            :root {
-                --bg-main: #161616;
-                --bg-sidebar: #1a1a1a;
-                --border-color: #262626;
-                --text-color: #ffffff;
-                --text-muted: #8e8e8e;
-                --accent-color: #ffffff;
-            }
-        }
-
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
         body { background-color: var(--bg-main); color: var(--text-color); height: 100vh; display: flex; overflow: hidden; }
 
-        /* شاشة تسجيل الدخول */
         .auth-screen { width: 100vw; height: 100vh; display: flex; flex-direction: column; justify-content: center; align-items: center; background: var(--bg-main); }
-        .auth-btn { background: var(--text-color); color: var(--bg-main); border: none; padding: 12px 24px; border-radius: 8px; font-weight: 6px; cursor: pointer; font-size: 16px; margin-top: 20px; transition: 0.2s; }
-        .auth-btn:hover { opacity: 0.9; }
-
-        /* حاوية التطبيق الرئيسي */
+        .auth-btn { background: var(--text-color); color: var(--bg-main); border: none; padding: 12px 24px; border-radius: 8px; font-weight: 600; cursor: pointer; font-size: 16px; margin-top: 20px; }
+        
         .app-container { display: none; width: 100%; height: 100%; }
-
-        /* القائمة الجانبية - مثل z.ai */
         .sidebar { width: 260px; background-color: var(--bg-sidebar); border-left: 1px solid var(--border-color); display: flex; flex-direction: column; padding: 15px; justify-content: space-between; }
         .new-chat-btn { display: flex; align-items: center; justify-content: space-between; border: 1px solid var(--border-color); padding: 10px 12px; border-radius: 8px; cursor: pointer; font-size: 14px; background: transparent; color: var(--text-color); margin-bottom: 20px; }
-        .new-chat-btn:hover { background: #22222210; }
-        @media (prefers-color-scheme: dark) { .new-chat-btn:hover { background: #ffffff0a; } }
+        .new-chat-btn:hover { background: #ffffff0a; }
         
         .sidebar-menu { flex: 1; overflow-y: auto; list-style: none; display: flex; flex-direction: column; gap: 4px; }
         .sidebar-menu p { font-size: 11px; color: var(--text-muted); margin: 10px 5px 5px; }
         .sidebar-menu li { padding: 8px 12px; border-radius: 6px; cursor: pointer; font-size: 14px; color: var(--text-color); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .sidebar-menu li:hover, .sidebar-menu li.active { background: #22222215; }
-        @media (prefers-color-scheme: dark) { .sidebar-menu li:hover, .sidebar-menu li.active { background: #ffffff0f; } }
+        .sidebar-menu li:hover, .sidebar-menu li.active { background: #ffffff0f; }
 
         .sidebar-footer { border-top: 1px solid var(--border-color); padding-top: 15px; display: flex; flex-direction: column; gap: 10px; }
         .user-info { display: flex; align-items: center; gap: 10px; font-size: 14px; }
-        .user-avatar { width: 32px; height: 32px; background: #444; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 14px; color: #fff; }
+        .user-avatar { width: 32px; height: 32px; background: #ff6b00; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 14px; color: #fff; }
 
-        /* منطقة الشات والمحتوى الرئيسي */
         .main-content { flex: 1; display: flex; flex-direction: column; position: relative; background: var(--bg-main); }
-        
-        /* واجهة الترحيب الفخمة المنتصفة */
         .welcome-screen { flex: 1; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; }
         .welcome-screen h1 { font-size: 44px; font-weight: 500; margin-bottom: 8px; letter-spacing: -1px; }
         .welcome-screen p { color: var(--text-muted); font-size: 15px; }
 
-        /* منطقة الرسايل المتدفقة */
         .chat-messages { flex: 1; overflow-y: auto; display: none; flex-direction: column; padding: 40px 15% 100px; gap: 24px; }
         .message { max-width: 85%; font-size: 16px; line-height: 1.6; word-wrap: break-word; white-space: pre-line; }
-        .message.user { align-self: flex-start; color: var(--text-color); }
-        .message.bot { align-self: flex-start; color: var(--text-color); opacity: 0.95; background: #ffffff05; padding: 5px 0; }
+        .message.user { align-self: flex-start; color: var(--text-color); background: #262626; padding: 10px 16px; border-radius: 18px; }
+        .message.bot { align-self: flex-start; color: var(--text-color); opacity: 0.95; padding: 5px 0; width: 100%; }
         .message.bot-loading { color: var(--text-muted); font-size: 14px; font-style: italic; }
         .message.system-error { color: #ff6b6b; font-size: 14px; align-self: center; }
 
-        /* صندوق الإدخال السفلي الطاير */
-        .input-container { position: absolute; bottom: 24px; left: 15%; right: 15%; background: var(--bg-sidebar); border: 1px solid var(--border-color); border-radius: 24px; padding: 8px 16px; display: flex; align-items: center; box-shadow: 0 10px 30px rgba(0,0,0,0.05); }
+        .input-container { position: absolute; bottom: 24px; left: 15%; right: 15%; background: var(--bg-sidebar); border: 1px solid var(--border-color); border-radius: 24px; padding: 8px 16px; display: flex; align-items: center; }
         .input-container input { flex: 1; background: transparent; border: none; color: var(--text-color); padding: 12px; font-size: 15px; outline: none; }
-        .send-icon-btn { background: var(--text-color); color: var(--bg-main); border: none; width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: 0.2s; }
-        .send-icon-btn:hover { opacity: 0.8; }
-        
-        .api-badge { font-size: 10px; font-family: monospace; background: #333; color: #ccc; padding: 3px 6px; border-radius: 4px; display: inline-block; max-width: 150px; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+        .send-icon-btn { background: var(--text-color); color: var(--bg-main); border: none; width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; }
     </style>
 </head>
 <body>
 
     <div class="auth-screen" id="authScreen">
         <h1 style="font-size: 36px; font-weight: 600;">Keo Studio AI</h1>
-        <p style="color: var(--text-muted); margin-top: 5px;">مرحباً بك في الجيل الجديد للذكاء الاصطناعي</p>
+        <p style="color: var(--text-muted); margin-top: 5px;">من صنع كريم حسين</p>
         <button class="auth-btn" onclick="loginWithGoogle()">تسجيل الدخول عبر Google</button>
     </div>
 
     <div class="app-container" id="appContainer">
-        
         <div class="sidebar">
             <div>
                 <button class="new-chat-btn" onclick="createNewChat()">
@@ -286,8 +246,7 @@
                 </button>
                 <ul class="sidebar-menu">
                     <p>المحادثات الأخيرة</p>
-                    <div id="previousChats">
-                        </div>
+                    <div id="previousChats"></div>
                 </ul>
             </div>
             
@@ -296,15 +255,14 @@
                     <div class="user-avatar">K</div>
                     <div>
                         <p id="userNameDisplay" style="font-weight: 500; font-size: 13px; color: var(--text-color);"></p>
-                        <span class="api-badge" id="apiKeyVal" title="اضغط لنسخ الـ API Key الخاص بك">keo_loading...</span>
+                        <span style="font-size: 11px; color: var(--text-muted);">حساب مفعّل بنجاح ✔</span>
                     </div>
                 </div>
-                <button onclick="logout()" style="background: transparent; border: none; color: #ff6b6b; font-size: 12px; cursor: pointer; text-align: right; padding-right: 5px;">تسجيل الخروج</button>
+                <button onclick="logout()" style="background: transparent; border: none; color: #ff6b6b; font-size: 12px; cursor: pointer; text-align: right;">تسجيل الخروج</button>
             </div>
         </div>
 
         <div class="main-content">
-            
             <div class="welcome-screen" id="welcomeScreen">
                 <h1>Hi, <span id="userNameDisplayBody">Kimo</span></h1>
                 <p>Interact with Keo Studio AI and explore the boundless creative world.</p>
@@ -317,7 +275,7 @@
                 <button class="send-icon-btn" onclick="sendMessage()">↑</button>
             </div>
         </div>
-
     </div>
 
 </body>
+</html>
