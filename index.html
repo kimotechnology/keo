@@ -36,11 +36,10 @@
         let currentMode = "chat";
         let imageMode = false;
         let userMemory = "";
-        // سجل المحادثات النصي فقط - بدون صور Base64
         let conversationHistory = [];
         let isGenerating = false;
 
-        // ======== توليد الصور عبر Pollinations.ai ========
+        // ======== توليد الصور - نظام محسّن ========
         function isImageRequest(text) {
             const keywords = [
                 'ارسم', 'صمم صورة', 'ولد صورة', 'أنشئ صورة', 'اصنع صورة',
@@ -59,17 +58,11 @@
             try {
                 const response = await fetch(groqUrl, {
                     method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${groqApiKey}`,
-                        'Content-Type': 'application/json'
-                    },
+                    headers: { 'Authorization': `Bearer ${groqApiKey}`, 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         model: "llama-3.3-70b-versatile",
                         messages: [
-                            {
-                                role: "system",
-                                content: "You are an expert image prompt engineer for AI image generation. Convert the user's request into a highly detailed, vivid English prompt optimized for Flux image generation. Include specifics about: art style, lighting, composition, color palette, camera angle, mood, texture, and fine details. Output ONLY the prompt text, nothing else. Keep it under 200 words. Make it visually stunning."
-                            },
+                            { role: "system", content: "Convert this into a detailed English image generation prompt for Flux model. Include: art style, lighting, composition, colors, camera angle, mood, textures, details. Output ONLY the prompt, under 200 words." },
                             { role: "user", content: userPrompt }
                         ],
                         temperature: 0.8,
@@ -77,27 +70,37 @@
                     })
                 });
                 const data = await response.json();
-                if (data.choices && data.choices[0]) {
-                    return data.choices[0].message.content.trim();
-                }
+                if (data.choices && data.choices[0]) return data.choices[0].message.content.trim();
             } catch (e) {}
             return userPrompt;
         }
 
         function buildImageUrl(prompt, seed) {
-            const params = new URLSearchParams({
-                width: '1024',
-                height: '1024',
-                model: 'flux',
-                nologo: 'true',
-                enhance: 'true',
-                seed: seed || Math.floor(Math.random() * 999999)
-            });
-            return `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?${params.toString()}`;
+            return `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=1024&model=flux&nologo=true&seed=${seed || Math.floor(Math.random() * 999999)}`;
+        }
+
+        // تحميل الصورة كـ Blob مع إعادة المحاولة
+        async function fetchImageAsBlob(url, retries = 3) {
+            for (let attempt = 1; attempt <= retries; attempt++) {
+                try {
+                    const controller = new AbortController();
+                    const timeout = setTimeout(() => controller.abort(), 60000); // 60 ثانية
+
+                    const response = await fetch(url, { signal: controller.signal });
+                    clearTimeout(timeout);
+
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    const blob = await response.blob();
+                    if (blob.size < 1000) throw new Error('صورة صغيرة جداً - ممكن خطأ');
+                    return URL.createObjectURL(blob);
+                } catch (e) {
+                    if (attempt === retries) throw e;
+                    await new Promise(r => setTimeout(r, 2000 * attempt));
+                }
+            }
         }
 
         async function generateAndDisplayImage(userPrompt) {
-            const chatMessages = document.getElementById('chatMessages');
             const user = auth.currentUser;
             if (!user) return;
 
@@ -126,89 +129,129 @@
             const seed = Math.floor(Math.random() * 999999);
             const imageUrl = buildImageUrl(enhancedPrompt, seed);
 
+            // تحميل الصورة فعلية
+            let blobUrl = null;
+            let loadError = false;
+
+            // عرض رسالة الصورة مع حالة التحميل
             const loadingEl = document.getElementById(loadingId);
             if (loadingEl) loadingEl.remove();
 
-            appendImageMessage(userPrompt, enhancedPrompt, imageUrl, seed);
+            const imgMsgId = appendImageMessage(userPrompt, enhancedPrompt, seed);
+
+            // تحديث حالة التحميل
+            updateImageStatus(imgMsgId, 'loading', 'جاري توليد وتحميل الصورة...');
+
+            try {
+                blobUrl = await fetchImageAsBlob(imageUrl);
+                updateImageStatus(imgMsgId, 'done', blobUrl);
+            } catch (e) {
+                // محاولة ثانية بـ seed مختلف
+                const seed2 = Math.floor(Math.random() * 999999);
+                const imageUrl2 = buildImageUrl(enhancedPrompt, seed2);
+                try {
+                    blobUrl = await fetchImageAsBlob(imageUrl2);
+                    updateImageStatus(imgMsgId, 'done', blobUrl);
+                } catch (e2) {
+                    updateImageStatus(imgMsgId, 'error', 'فشل تحميل الصورة بعد محاولتين. اضغط "إعادة" للمحاولة مرة أخرى.');
+                }
+            }
+
             push(msgListRef, {
                 text: `[IMAGE_GEN]${userPrompt}|||${enhancedPrompt}|||${seed}`,
                 sender: 'bot'
             });
 
-            // نضيف للسجل النصي فقط - بدون بيانات الصورة
             conversationHistory.push({ role: 'user', content: userPrompt });
             conversationHistory.push({ role: 'assistant', content: `[تم توليد صورة بناءً على: ${userPrompt}]` });
+            scrollToBottom();
         }
 
-        function appendImageMessage(originalPrompt, enhancedPrompt, imageUrl, seed) {
+        function appendImageMessage(originalPrompt, enhancedPrompt, seed) {
             const chatMessages = document.getElementById('chatMessages');
             const wrapper = document.createElement('div');
             wrapper.className = 'message-wrapper bot';
-            const msgId = 'img_' + Math.random().toString(36).substr(2, 9);
+            const msgId = 'imgmsg_' + Math.random().toString(36).substr(2, 9);
             wrapper.id = msgId;
 
             const promptId = 'ep_' + Math.random().toString(36).substr(2, 9);
             wrapper.innerHTML = `
-                <div class="msg-avatar bot-av">
-                    <div class="bot-icon">K</div>
-                </div>
+                <div class="msg-avatar bot-av"><div class="bot-icon">K</div></div>
                 <div class="message bot image-gen-result">
-                    <div class="gen-label"><i class="fas fa-wand-magic-sparkles"></i> صورة مولّدة بواسطة Keo Image</div>
-                    <div class="gen-image-container">
+                    <div class="gen-label"><i class="fas fa-wand-magic-sparkles"></i> Keo Image</div>
+                    <div class="gen-image-container" id="imgc_${msgId}">
                         <div class="gen-image-skeleton" id="skel_${msgId}">
                             <div class="shimmer-line"></div>
                             <div class="shimmer-line short"></div>
                             <div class="shimmer-line"></div>
-                            <span style="margin-top:12px;font-size:12px;color:var(--text-muted);display:flex;align-items:center;gap:8px;">
+                            <span id="status_${msgId}" style="margin-top:12px;font-size:12px;color:var(--text-muted);display:flex;align-items:center;gap:8px;">
                                 <i class="fas fa-spinner fa-spin"></i> جاري توليد الصورة...
                             </span>
                         </div>
-                        <img class="gen-image" src="${imageUrl}" alt="${escapeHtml(originalPrompt)}" 
-                            onload="document.getElementById('skel_${msgId}').style.display='none';this.style.display='block';"
-                            onerror="document.getElementById('skel_${msgId}').innerHTML='<i class=\\'fas fa-exclamation-triangle\\' style=\\'color:var(--danger);font-size:24px;\\'></i><br><span style=\\'font-size:12px;color:var(--danger);\\'>فشل تحميل الصورة. حاول مرة أخرى.</span>'"
-                            style="display:none;"
-                        />
+                        <img class="gen-image" id="realimg_${msgId}" src="" alt="" style="display:none;" />
                     </div>
                     <div class="gen-actions">
-                        <button class="gen-action-btn" onclick="downloadGenImage('${imageUrl}','${seed}')">
+                        <button class="gen-action-btn" id="dlbtn_${msgId}" onclick="downloadImg('${msgId}')" disabled>
                             <i class="fas fa-download"></i> تحميل
                         </button>
-                        <button class="gen-action-btn" onclick="document.getElementById('userInput').value='${escapeHtml(originalPrompt).replace(/'/g,"\\'")}';sendMessage();">
-                            <i class="fas fa-rotate"></i> إعادة بتغير
+                        <button class="gen-action-btn" onclick="retryImageGen('${escapeHtml(originalPrompt).replace(/'/g, "\\'")}')">
+                            <i class="fas fa-rotate"></i> إعادة
                         </button>
                         <button class="gen-action-btn" onclick="document.getElementById('${promptId}').classList.toggle('expanded')">
                             <i class="fas fa-code"></i> البرومبت
                         </button>
                     </div>
                     <div class="gen-prompt-detail" id="${promptId}">
-                        <div class="gen-prompt-label">البرومبت المُحسّن (Enhanced Prompt):</div>
+                        <div class="gen-prompt-label">البرومبت المُحسّن:</div>
                         <div class="gen-prompt-text">${escapeHtml(enhancedPrompt)}</div>
                     </div>
                 </div>
             `;
 
             chatMessages.appendChild(wrapper);
-            chatMessages.scrollTop = chatMessages.scrollHeight;
+            scrollToBottom();
             return msgId;
         }
 
-        window.downloadGenImage = async (url, seed) => {
-            try {
-                showToast("جاري تحميل الصورة...", "info");
-                const response = await fetch(url);
-                const blob = await response.blob();
-                const blobUrl = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = blobUrl;
-                a.download = `keo-image-${seed}.png`;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                URL.revokeObjectURL(blobUrl);
-                showToast("تم تحميل الصورة بنجاح", "success");
-            } catch (e) {
-                window.open(url, '_blank');
+        function updateImageStatus(msgId, status, data) {
+            const skeleton = document.getElementById('skel_' + msgId);
+            const img = document.getElementById('realimg_' + msgId);
+            const statusEl = document.getElementById('status_' + msgId);
+            const dlBtn = document.getElementById('dlbtn_' + msgId);
+
+            if (status === 'loading') {
+                if (statusEl) statusEl.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${data}`;
+            } else if (status === 'done') {
+                if (skeleton) skeleton.style.display = 'none';
+                if (img) {
+                    img.src = data;
+                    img.style.display = 'block';
+                }
+                if (dlBtn) dlBtn.disabled = false;
+                // تخزين blobUrl للتحميل
+                if (img) img.dataset.bloburl = data;
+                scrollToBottom();
+            } else if (status === 'error') {
+                if (skeleton) {
+                    skeleton.innerHTML = `<i class="fas fa-exclamation-triangle" style="color:var(--danger);font-size:28px;"></i><br><span style="font-size:12px;color:var(--danger);margin-top:8px;display:block;">${data}</span>`;
+                }
             }
+        }
+
+        window.downloadImg = (msgId) => {
+            const img = document.getElementById('realimg_' + msgId);
+            if (!img || !img.dataset.bloburl) return;
+            const a = document.createElement('a');
+            a.href = img.dataset.bloburl;
+            a.download = `keo-image-${Date.now()}.png`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        };
+
+        window.retryImageGen = (prompt) => {
+            document.getElementById('userInput').value = prompt;
+            sendMessage();
         };
 
         window.toggleImageMode = () => {
@@ -221,7 +264,7 @@
                 btn.classList.add('active');
                 input.placeholder = "صف الصورة التي تريد توليدها...";
                 container.classList.add('image-mode');
-                showToast("تم تفعيل وضع توليد الصور", "info");
+                showToast("وضع توليد الصور مفعل", "info");
             } else {
                 btn.classList.remove('active');
                 input.placeholder = "How can I help you today?";
@@ -229,33 +272,14 @@
             }
         };
 
-        // ======== تنظيف سجل المحادثة قبل الإرسال ========
-        // هذا هو الحل الرئيسي: نحتفظ بسجل نصي نظيف بدون صور Base64
-        function cleanMessageForHistory(msg) {
-            // إذا كانت الرسالة عبارة عن array (صورة + نص)، نأخذ النص فقط
-            if (Array.isArray(msg.content)) {
-                const textPart = msg.content.find(p => p.type === 'text');
-                return { role: msg.role, content: textPart ? textPart.text : '[تم رفع صورة]' };
+        // ======== تمرير تلقائي ========
+        function scrollToBottom() {
+            const contentArea = document.getElementById('contentArea');
+            if (contentArea) {
+                requestAnimationFrame(() => {
+                    contentArea.scrollTop = contentArea.scrollHeight;
+                });
             }
-            // إذا كانت الرسالة نص عادي
-            if (typeof msg.content === 'string') {
-                return { role: msg.role, content: msg.content };
-            }
-            return { role: msg.role, content: '[محتوى]' };
-        }
-
-        function buildApiMessages(systemInstruction) {
-            // نأخذ آخر 20 رسالة وننظفها
-            const recentHistory = conversationHistory.slice(-20);
-            const cleanedHistory = recentHistory.map(cleanMessageForHistory);
-
-            // نتحقق إن كل رسالة content ليس فارغ
-            const validHistory = cleanedHistory.filter(m => m.content && m.content.trim().length > 0);
-
-            return [
-                { role: 'system', content: systemInstruction },
-                ...validHistory
-            ];
         }
 
         // ======== تسجيل الدخول ========
@@ -267,20 +291,13 @@
                 showToast("خطأ تسجيل الدخول: " + error.message, "error");
             }
         };
-
         window.logout = () => signOut(auth);
 
         async function checkAndCreateUser(user) {
             const userRef = ref(db, 'users/' + user.uid);
             const snapshot = await get(userRef);
             if (!snapshot.exists()) {
-                await set(userRef, {
-                    uid: user.uid,
-                    fullName: user.displayName || "مستخدم",
-                    email: user.email,
-                    memory: "",
-                    createdAt: Date.now()
-                });
+                await set(userRef, { uid: user.uid, fullName: user.displayName || "مستخدم", email: user.email, memory: "", createdAt: Date.now() });
             }
         }
 
@@ -291,14 +308,12 @@
             userMemory = snap.exists() ? (snap.val() || "") : "";
             updateMemoryUI();
         }
-
         async function saveMemory(uid, newMemory) {
             const memRef = ref(db, `users/${uid}/memory`);
             await set(memRef, newMemory);
             userMemory = newMemory;
             updateMemoryUI();
         }
-
         function updateMemoryUI() {
             const memCount = document.getElementById('memoryCount');
             const memPreview = document.getElementById('memoryPreview');
@@ -316,26 +331,13 @@
         }
 
         window.toggleMemoryPanel = () => {
-            const panel = document.getElementById('memoryPanel');
-            const overlay = document.getElementById('memoryOverlay');
-            panel.classList.toggle('open');
-            overlay.classList.toggle('open');
+            document.getElementById('memoryPanel').classList.toggle('open');
+            document.getElementById('memoryOverlay').classList.toggle('open');
         };
+        window.clearMemory = async () => { if (!auth.currentUser) return; await saveMemory(auth.currentUser.uid, ""); showToast("تم مسح الذكريات", "success"); };
+        window.saveMemoryEdit = async () => { if (!auth.currentUser) return; await saveMemory(auth.currentUser.uid, document.getElementById('memoryViewContent').innerText); showToast("تم حفظ التعديلات", "success"); };
 
-        window.clearMemory = async () => {
-            if (!auth.currentUser) return;
-            await saveMemory(auth.currentUser.uid, "");
-            showToast("تم مسح جميع الذكريات", "success");
-        };
-
-        window.saveMemoryEdit = async () => {
-            if (!auth.currentUser) return;
-            const edited = document.getElementById('memoryViewContent').innerText;
-            await saveMemory(auth.currentUser.uid, edited);
-            showToast("تم حفظ التعديلات على الذاكرة", "success");
-        };
-
-        // ======== تبديل الأوضاع ========
+        // ======== الأوضاع ========
         window.switchMode = (mode) => {
             currentMode = mode;
             document.querySelectorAll('.nav-tab').forEach(tab => tab.classList.remove('active'));
@@ -346,28 +348,22 @@
             } else {
                 document.getElementById('agentTab').classList.add('active');
                 document.getElementById('modelTitle').innerHTML = '<i class="fas fa-bolt" style="color:#f59e0b;margin-left:6px;"></i> Keo Developer Agent <span class="model-badge agent">Agent</span>';
-                document.getElementById('welcomeSub').innerText = "وضع المطور الذكي: رفع الأكواد والصور، طلب الحلول الشاملة بصلاحيات كاملة.";
+                document.getElementById('welcomeSub').innerText = "وضع المطور الذكي بصلاحيات كاملة.";
             }
             createNewChat();
         };
 
-        // ======== مراقبة المصادقة ========
+        // ======== المصادقة ========
         onAuthStateChanged(auth, (user) => {
             if (user) {
                 document.getElementById('authScreen').style.display = 'none';
                 document.getElementById('appContainer').style.display = 'flex';
-
                 const userFirstName = user.displayName ? user.displayName.split(' ')[0] : "User";
                 document.getElementById('userNameDisplay').innerText = user.displayName || "المستخدم";
                 document.getElementById('userEmailDisplay').innerText = user.email || "";
                 document.getElementById('welcomeUserName').innerText = userFirstName;
-
-                if (user.photoURL) {
-                    document.getElementById('userAvatarImg').src = user.photoURL;
-                }
-
+                if (user.photoURL) document.getElementById('userAvatarImg').src = user.photoURL;
                 loadMemory(user.uid);
-
                 const chatsRef = ref(db, `users/${user.uid}/chats`);
                 onValue(chatsRef, (snapshot) => {
                     const chatsList = document.getElementById('previousChats');
@@ -379,8 +375,7 @@
                             const li = document.createElement('li');
                             li.className = currentChatId === id ? 'active' : '';
                             const isImg = chats[id].title && chats[id].title.startsWith('🎨');
-                            const icon = isImg ? 'fa-palette' : 'fa-message';
-                            li.innerHTML = `<i class="fas ${icon}" style="font-size:11px;opacity:0.4;margin-left:8px;"></i><span>${chats[id].title || "محادثة جديدة"}</span>`;
+                            li.innerHTML = `<i class="fas ${isImg ? 'fa-palette' : 'fa-message'}" style="font-size:11px;opacity:0.4;margin-left:8px;"></i><span>${chats[id].title || "محادثة"}</span>`;
                             li.onclick = () => loadChat(id);
                             chatsList.appendChild(li);
                         });
@@ -399,42 +394,75 @@
             document.getElementById('chatMessages').innerHTML = '';
             document.getElementById('welcomeScreen').style.display = 'flex';
             document.getElementById('chatMessages').style.display = 'none';
-            document.querySelectorAll('.sidebar-menu li').forEach(item => item.classList.remove('active'));
         };
 
         async function loadChat(chatId) {
             currentChatId = chatId;
             conversationHistory = [];
             document.getElementById('welcomeScreen').style.display = 'none';
-            const messagesContainer = document.getElementById('chatMessages');
-            messagesContainer.style.display = 'flex';
-            messagesContainer.innerHTML = '';
-
+            const mc = document.getElementById('chatMessages');
+            mc.style.display = 'flex';
+            mc.innerHTML = '';
             const user = auth.currentUser;
-            const messagesSnapshot = await get(ref(db, `users/${user.uid}/chats/${chatId}/messages`));
-            if (messagesSnapshot.exists()) {
-                const messages = messagesSnapshot.val();
-                Object.values(messages).forEach(msg => {
+            const snap = await get(ref(db, `users/${user.uid}/chats/${chatId}/messages`));
+            if (snap.exists()) {
+                Object.values(snap.val()).forEach(msg => {
                     if (msg.sender === 'user') {
                         appendMessageElement(msg.text, 'user');
-                        // نضيف للسجل النصي فقط
                         conversationHistory.push({ role: 'user', content: msg.text });
                     } else if (msg.text.startsWith('[IMAGE_GEN]')) {
                         const parts = msg.text.replace('[IMAGE_GEN]', '').split('|||');
-                        const origPrompt = parts[0] || '';
-                        const enhancedPrompt = parts[1] || '';
+                        const orig = parts[0] || '';
+                        const enhanced = parts[1] || '';
                         const seed = parseInt(parts[2]) || Math.floor(Math.random() * 999999);
-                        const imageUrl = buildImageUrl(enhancedPrompt, seed);
-                        appendImageMessage(origPrompt, enhancedPrompt, imageUrl, seed);
-                        // نضيف نص عادي للسجل بدون بيانات الصورة
-                        conversationHistory.push({ role: 'assistant', content: `[تم توليد صورة بناءً على: ${origPrompt}]` });
+                        // نعرض placeholder بدل ما نحمل الصورة القديمة تاني
+                        appendImagePlaceholder(orig, enhanced, seed);
+                        conversationHistory.push({ role: 'assistant', content: `[تم توليد صورة: ${orig}]` });
                     } else {
                         appendMessageElement(msg.text, 'bot');
                         conversationHistory.push({ role: 'assistant', content: msg.text });
                     }
                 });
             }
+            scrollToBottom();
         }
+
+        // عرض placeholder للمحادثات القديمة بدل إعادة تحميل الصور
+        function appendImagePlaceholder(origPrompt, enhancedPrompt, seed) {
+            const chatMessages = document.getElementById('chatMessages');
+            const wrapper = document.createElement('div');
+            wrapper.className = 'message-wrapper bot';
+            const msgId = 'ph_' + Math.random().toString(36).substr(2, 9);
+            wrapper.innerHTML = `
+                <div class="msg-avatar bot-av"><div class="bot-icon">K</div></div>
+                <div class="message bot image-gen-result">
+                    <div class="gen-label"><i class="fas fa-wand-magic-sparkles"></i> Keo Image</div>
+                    <div class="gen-image-container" style="padding:20px;text-align:center;">
+                        <i class="fas fa-image" style="font-size:40px;color:var(--purple);opacity:0.4;"></i>
+                        <p style="font-size:13px;color:var(--text-muted);margin-top:8px;">صورة مولّدة سابقاً: ${escapeHtml(origPrompt)}</p>
+                        <button class="gen-action-btn" style="margin:8px auto 0;" onclick="reloadOldImage(this, '${escapeHtml(enhancedPrompt).replace(/'/g, "\\'")}', ${seed})">
+                            <i class="fas fa-eye"></i> عرض الصورة
+                        </button>
+                    </div>
+                </div>
+            `;
+            chatMessages.appendChild(wrapper);
+        }
+
+        window.reloadOldImage = async (btn, enhancedPrompt, seed) => {
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> جاري التحميل...';
+            const url = buildImageUrl(enhancedPrompt, seed);
+            try {
+                const blobUrl = await fetchImageAsBlob(url);
+                const container = btn.closest('.gen-image-container');
+                container.innerHTML = `<img class="gen-image" src="${blobUrl}" style="display:block;max-width:512px;" />`;
+                scrollToBottom();
+            } catch (e) {
+                btn.innerHTML = '<i class="fas fa-exclamation-triangle"></i> فشل التحميل';
+                btn.disabled = false;
+            }
+        };
 
         // ======== رفع الملفات ========
         window.triggerFileUpload = () => document.getElementById('hiddenFileInput').click();
@@ -442,31 +470,19 @@
             const file = event.target.files[0];
             if (!file) return;
             const isImage = file.type.startsWith('image/');
-            const maxAllowedSize = isImage ? (4 * 1024 * 1024) : (250 * 1024);
-            if (file.size > maxAllowedSize) {
-                showToast(`حجم الملف كبير. الحد الأقصى: ${isImage ? "4MB" : "250KB"}`, "error");
-                event.target.value = "";
-                return;
-            }
+            const maxSize = isImage ? (4 * 1024 * 1024) : (250 * 1024);
+            if (file.size > maxSize) { showToast(`حجم الملف كبير. الحد: ${isImage ? "4MB" : "250KB"}`, "error"); event.target.value = ""; return; }
             const reader = new FileReader();
             reader.onload = function(e) {
                 if (isImage) { uploadedImageContent = e.target.result; uploadedTextContent = ""; }
                 else { uploadedTextContent = e.target.result; uploadedImageContent = ""; }
-                const icon = isImage ? 'fa-image' : 'fa-file-code';
-                document.getElementById('fileBadgeIcon').className = `fas ${icon}`;
+                document.getElementById('fileBadgeIcon').className = `fas ${isImage ? 'fa-image' : 'fa-file-code'}`;
                 document.getElementById('fileBadgeText').innerText = file.name;
                 document.getElementById('fileBadge').style.display = 'flex';
             };
-            if (isImage) reader.readAsDataURL(file);
-            else reader.readAsText(file);
+            if (isImage) reader.readAsDataURL(file); else reader.readAsText(file);
         };
-
-        window.removeUploadedFile = () => {
-            uploadedTextContent = "";
-            uploadedImageContent = "";
-            document.getElementById('fileBadge').style.display = 'none';
-            document.getElementById('hiddenFileInput').value = "";
-        };
+        window.removeUploadedFile = () => { uploadedTextContent = ""; uploadedImageContent = ""; document.getElementById('fileBadge').style.display = 'none'; document.getElementById('hiddenFileInput').value = ""; };
 
         // ======== إرسال الرسالة ========
         window.sendMessage = async (overrideText) => {
@@ -476,176 +492,125 @@
             const user = auth.currentUser;
             if (!messageText || !user) return;
 
-            // فحص: هل هو طلب توليد صورة؟
             if (imageMode || isImageRequest(messageText)) {
                 isGenerating = true;
                 document.getElementById('sendBtn').disabled = true;
                 document.getElementById('sendBtn').innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
-
                 document.getElementById('welcomeScreen').style.display = 'none';
                 document.getElementById('chatMessages').style.display = 'flex';
                 userInput.value = '';
-
                 await generateAndDisplayImage(messageText);
-
                 isGenerating = false;
                 document.getElementById('sendBtn').disabled = false;
                 document.getElementById('sendBtn').innerHTML = '<i class="fas fa-arrow-up"></i>';
                 return;
             }
 
-            // محادثة عادية
             isGenerating = true;
             document.getElementById('sendBtn').disabled = true;
             document.getElementById('sendBtn').innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
-
             document.getElementById('welcomeScreen').style.display = 'none';
-            const chatMessages = document.getElementById('chatMessages');
-            chatMessages.style.display = 'flex';
+            document.getElementById('chatMessages').style.display = 'flex';
 
             appendMessageElement(messageText, 'user');
             userInput.value = '';
+            scrollToBottom();
 
-            // حفظ رسالة المستخدم في Firebase
             if (!currentChatId) {
                 const newChatRef = push(ref(db, `users/${user.uid}/chats`));
                 currentChatId = newChatRef.key;
-                await set(newChatRef, {
-                    title: messageText.substring(0, 30) + (messageText.length > 30 ? '...' : ''),
-                    createdAt: Date.now()
-                });
+                await set(newChatRef, { title: messageText.substring(0, 30) + (messageText.length > 30 ? '...' : ''), createdAt: Date.now() });
             }
             const msgListRef = ref(db, `users/${user.uid}/chats/${currentChatId}/messages`);
             push(msgListRef, { text: messageText, sender: 'user' });
 
-            // إضافة رسالة المستخدم للسجل
-            // مهم: إذا في صورة مرفوعة، نضيف نص فقط للسجل الدائم
             if (uploadedImageContent) {
-                // للسجل الدائم نحفظ النص فقط
                 conversationHistory.push({ role: 'user', content: messageText });
             } else if (uploadedTextContent) {
-                conversationHistory.push({ role: 'user', content: `[User Uploaded Data/Code Source]:\n${uploadedTextContent.substring(0, 500)}\n\n[User Directive]:\n${messageText}` });
+                conversationHistory.push({ role: 'user', content: `[ملف مرفوق]:\n${uploadedTextContent.substring(0, 500)}\n\n[طلب]:\n${messageText}` });
             } else {
                 conversationHistory.push({ role: 'user', content: messageText });
             }
 
             const loadingId = appendMessageElement('', 'bot-loading');
+            scrollToBottom();
 
-            // بناء التعليمات
             let memoryContext = "";
             if (userMemory && userMemory.trim().length > 0) {
-                memoryContext = `\n\n[User Memory - Important information you remember about this user]:\n${userMemory}\n[End of Memory]`;
+                memoryContext = `\n\n[User Memory]:\n${userMemory}\n[End of Memory]`;
             }
 
-            let systemInstruction = `You are Keo Studio AI, a high-fidelity intelligence assistant created by Karim Hussein. You MUST always output your step-by-step reasoning inside _hresult think  and  /think  tags first, then output your final response. You communicate primarily in Arabic but can use English when appropriate. Be helpful, creative, and thorough.${memoryContext}`;
-
+            let systemInstruction = `You are Keo Studio AI, created by Karim Hussein. You MUST always output your step-by-step reasoning inside _hresult think  and  /think  tags first, then output your final response. Communicate primarily in Arabic. Be helpful, creative, thorough.${memoryContext}`;
             if (currentMode === "agent") {
-                systemInstruction = `You are the Ultimate Keo Developer Agent. You have root-level permissions to design advanced systems, manage workflows, read uploaded source codes, and analyze images. You MUST always output your step-by-step reasoning inside _hresult think  and  /think  tags first, then output your final response. Be extremely thorough in code analysis and provide production-ready solutions.${memoryContext}`;
+                systemInstruction = `You are the Ultimate Keo Developer Agent with root-level permissions. You MUST always output your step-by-step reasoning inside _hresult think  and  /think  tags first, then output your final response. Provide production-ready solutions.${memoryContext}`;
             }
 
-            // بناء رسائل API - تنظيف كامل
             let apiMessages;
-
             if (uploadedImageContent) {
-                // طلب رؤية بصرية - نرسل الصورة فقط في الرسالة الأخيرة
-                const cleanedHistory = conversationHistory.slice(0, -1).slice(-8).map(cleanMessageForHistory);
-                apiMessages = [
-                    { role: 'system', content: systemInstruction },
-                    ...cleanedHistory,
-                    {
-                        role: 'user',
-                        content: [
-                            { type: 'text', text: messageText },
-                            { type: 'image_url', image_url: { url: uploadedImageContent } }
-                        ]
-                    }
-                ];
+                const cleaned = conversationHistory.slice(0, -1).slice(-8).map(cleanMsg);
+                apiMessages = [{ role: 'system', content: systemInstruction }, ...cleaned, { role: 'user', content: [{ type: 'text', text: messageText }, { type: 'image_url', image_url: { url: uploadedImageContent } }] }];
             } else {
-                // طلب نصي عادي - نستخدم السجل المنظف
-                apiMessages = buildApiMessages(systemInstruction);
+                const recent = conversationHistory.slice(-20).map(cleanMsg).filter(m => m.content && m.content.trim());
+                apiMessages = [{ role: 'system', content: systemInstruction }, ...recent];
             }
 
-            // تحديد الموديل
-            let activeModel = "llama-3.3-70b-versatile";
-            if (uploadedImageContent) {
-                activeModel = "meta-llama/llama-4-scout-17b-16e-instruct";
-            }
-
+            let activeModel = uploadedImageContent ? "meta-llama/llama-4-scout-17b-16e-instruct" : "llama-3.3-70b-versatile";
             removeUploadedFile();
 
             try {
                 const response = await fetch(groqUrl, {
                     method: 'POST',
                     headers: { 'Authorization': `Bearer ${groqApiKey}`, 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        model: activeModel,
-                        messages: apiMessages,
-                        temperature: 0.6
-                    })
+                    body: JSON.stringify({ model: activeModel, messages: apiMessages, temperature: 0.6 })
                 });
-
                 const data = await response.json();
-
-                // فحص الأخطاء من الـ API
-                if (!response.ok || data.error) {
-                    const errMsg = data.error ? data.error.message : `HTTP ${response.status}`;
-                    throw new Error(errMsg);
-                }
-
-                const loadingEl = document.getElementById(loadingId);
-                if (loadingEl) loadingEl.remove();
-
+                if (!response.ok || data.error) throw new Error(data.error ? data.error.message : `HTTP ${response.status}`);
+                const el = document.getElementById(loadingId);
+                if (el) el.remove();
                 if (data.choices && data.choices[0]) {
                     const rawReply = data.choices[0].message.content;
                     appendMessageElement(rawReply, 'bot');
                     push(msgListRef, { text: rawReply, sender: 'bot' });
-                    // نضيف الرد للسجل كنص عادي
                     conversationHistory.push({ role: 'assistant', content: rawReply });
-                    await updateMemoryFromConversation(user.uid, messageText, rawReply);
-                } else {
-                    throw new Error('لم يتم استلام رد صالح من الموديل');
-                }
+                    await updateMemory(user.uid, messageText, rawReply);
+                } else { throw new Error('لم يتم استلام رد صالح'); }
             } catch (error) {
-                const loadingEl = document.getElementById(loadingId);
-                if (loadingEl) loadingEl.remove();
+                const el = document.getElementById(loadingId);
+                if (el) el.remove();
                 appendMessageElement(`حدث خطأ: ${error.message}`, 'system-error');
-                // نحذف آخر رسالة مستخدم من السجل لأنها فشلت
-                if (conversationHistory.length > 0 && conversationHistory[conversationHistory.length - 1].role === 'user') {
-                    conversationHistory.pop();
-                }
+                if (conversationHistory.length > 0 && conversationHistory[conversationHistory.length - 1].role === 'user') conversationHistory.pop();
             }
 
             isGenerating = false;
             document.getElementById('sendBtn').disabled = false;
             document.getElementById('sendBtn').innerHTML = '<i class="fas fa-arrow-up"></i>';
+            scrollToBottom();
         };
 
-        // ======== تحديث الذاكرة ========
-        async function updateMemoryFromConversation(uid, userMsg, botReply) {
-            const personalKeywords = ['اسمي', 'اسمي هو', 'أنا أعمل', 'عمري', 'أسكن', 'أعيش', 'بحب', 'بكره', 'مفضل', 'My name', 'I am', 'I work', 'I live', 'I like', 'my favorite'];
-            const hasPersonalInfo = personalKeywords.some(kw => userMsg.toLowerCase().includes(kw.toLowerCase()));
-            if (!hasPersonalInfo) return;
+        function cleanMsg(msg) {
+            if (Array.isArray(msg.content)) {
+                const t = msg.content.find(p => p.type === 'text');
+                return { role: msg.role, content: t ? t.text : '[صورة]' };
+            }
+            return { role: msg.role, content: typeof msg.content === 'string' ? msg.content : '[محتوى]' };
+        }
+
+        async function updateMemory(uid, userMsg, botReply) {
+            const kw = ['اسمي', 'أنا أعمل', 'عمري', 'أسكن', 'أعيش', 'بحب', 'مفضل', 'My name', 'I work', 'I live', 'I like'];
+            if (!kw.some(k => userMsg.toLowerCase().includes(k.toLowerCase()))) return;
             try {
-                const memResponse = await fetch(groqUrl, {
-                    method: 'POST',
-                    headers: { 'Authorization': `Bearer ${groqApiKey}`, 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        model: "llama-3.3-70b-versatile",
-                        messages: [
-                            { role: "system", content: `You are a memory extraction assistant. Extract ONLY factual personal information about the user. Current memory: ${userMemory || "empty"}. Return ONLY new/updated facts, one per line. If no new personal info, return empty.` },
-                            { role: "user", content: `User said: "${userMsg}"` }
-                        ],
-                        temperature: 0.1,
-                        max_tokens: 200
-                    })
+                const r = await fetch(groqUrl, { method: 'POST', headers: { 'Authorization': `Bearer ${groqApiKey}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ model: "llama-3.3-70b-versatile", messages: [
+                        { role: "system", content: `Extract ONLY factual personal info. Current memory: ${userMemory || "empty"}. Return ONLY new facts, one per line. If none, return empty.` },
+                        { role: "user", content: `User said: "${userMsg}"` }
+                    ], temperature: 0.1, max_tokens: 200 })
                 });
-                const memData = await memResponse.json();
-                if (memData.choices && memData.choices[0]) {
-                    const newFacts = memData.choices[0].message.content.trim();
-                    if (newFacts && newFacts.length > 2 && !newFacts.toLowerCase().includes("no personal") && !newFacts.toLowerCase().includes("empty")) {
-                        const updatedMemory = userMemory ? userMemory + "\n" + newFacts : newFacts;
-                        await saveMemory(uid, updatedMemory);
-                        showToast("تم حفظ معلومة جديدة في الذاكرة", "memory");
+                const d = await r.json();
+                if (d.choices && d.choices[0]) {
+                    const f = d.choices[0].message.content.trim();
+                    if (f && f.length > 2 && !f.toLowerCase().includes("no personal") && !f.toLowerCase().includes("empty")) {
+                        await saveMemory(uid, userMemory ? userMemory + "\n" + f : f);
+                        showToast("تم حفظ معلومة في الذاكرة", "memory");
                     }
                 }
             } catch (e) {}
@@ -660,139 +625,80 @@
             wrapper.id = msgId;
 
             if (sender === 'user') {
-                wrapper.innerHTML = `
-                    <div class="msg-avatar user-av">
-                        <img src="${auth.currentUser?.photoURL || 'https://ui-avatars.com/api/?name=User&background=333&color=fff&size=32'}" alt="">
-                    </div>
-                    <div class="message user">${escapeHtml(text)}</div>
-                `;
+                wrapper.innerHTML = `<div class="msg-avatar user-av"><img src="${auth.currentUser?.photoURL || 'https://ui-avatars.com/api/?name=U&background=333&color=fff&size=32'}" alt=""></div><div class="message user">${escapeHtml(text)}</div>`;
             } else if (sender === 'bot') {
-                wrapper.innerHTML = `
-                    <div class="msg-avatar bot-av"><div class="bot-icon">K</div></div>
-                    <div class="message bot">${formatBotMessage(text)}</div>
-                `;
+                wrapper.innerHTML = `<div class="msg-avatar bot-av"><div class="bot-icon">K</div></div><div class="message bot">${formatBotMsg(text)}</div>`;
             } else if (sender === 'bot-loading') {
-                wrapper.innerHTML = `
-                    <div class="msg-avatar bot-av"><div class="bot-icon">K</div></div>
-                    <div class="message bot-loading"><div class="loading-dots"><span></span><span></span><span></span></div></div>
-                `;
+                wrapper.innerHTML = `<div class="msg-avatar bot-av"><div class="bot-icon">K</div></div><div class="message bot-loading"><div class="loading-dots"><span></span><span></span><span></span></div></div>`;
             } else {
                 wrapper.innerHTML = `<div class="message system-error"><i class="fas fa-exclamation-triangle"></i> ${text}</div>`;
             }
 
             chatMessages.appendChild(wrapper);
-            chatMessages.scrollTop = chatMessages.scrollHeight;
+            scrollToBottom();
             return msgId;
         }
 
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
-        }
+        function escapeHtml(t) { const d = document.createElement('div'); d.textContent = t; return d.innerHTML; }
 
-        function formatBotMessage(text) {
+        function formatBotMsg(text) {
             if (text.includes("_hresult think") && text.includes(" /think ")) {
                 const parts = text.split(" /think ");
-                const thinkingBlock = parts[0].replace("_hresult think", "").trim();
-                const finalReplyBlock = parts[1].trim();
-                const id = 'think_' + Math.random().toString(36).substr(2, 9);
-                return `
-                    <div class="thinking-container">
-                        <div class="thinking-header" onclick="document.getElementById('${id}').classList.toggle('expanded');this.querySelector('.arrow-icon').classList.toggle('rotated')">
-                            <div class="think-label"><i class="fas fa-brain"></i> تفكير عميق</div>
-                            <i class="fas fa-chevron-down arrow-icon"></i>
-                        </div>
-                        <div class="thinking-body" id="${id}">${escapeHtml(thinkingBlock)}</div>
-                    </div>
-                    <div class="final-text">${formatMarkdown(finalReplyBlock)}</div>
-                `;
+                const think = parts[0].replace("_hresult think", "").trim();
+                const reply = parts[1].trim();
+                const id = 'th_' + Math.random().toString(36).substr(2, 9);
+                return `<div class="thinking-container"><div class="thinking-header" onclick="document.getElementById('${id}').classList.toggle('expanded');this.querySelector('.arrow-icon').classList.toggle('rotated')"><div class="think-label"><i class="fas fa-brain"></i> تفكير عميق</div><i class="fas fa-chevron-down arrow-icon"></i></div><div class="thinking-body" id="${id}">${escapeHtml(think)}</div></div><div class="final-text">${formatMd(reply)}</div>`;
             }
-            return formatMarkdown(text);
+            return formatMd(text);
         }
 
-        function formatMarkdown(text) {
-            let f = escapeHtml(text);
+        function formatMd(t) {
+            let f = escapeHtml(t);
             f = f.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
             f = f.replace(/```(\w*)\n?([\s\S]*?)```/g, '<div class="code-block"><div class="code-header"><span>$1</span><button onclick="copyCode(this)">نسخ</button></div><pre><code>$2</code></pre></div>');
             f = f.replace(/`(.*?)`/g, '<code class="inline-code">$1</code>');
             return f;
         }
 
-        window.copyCode = (btn) => {
-            const code = btn.closest('.code-block').querySelector('code').innerText;
-            navigator.clipboard.writeText(code);
-            btn.innerText = "تم!";
-            setTimeout(() => btn.innerText = "نسخ", 1500);
-        };
+        window.copyCode = (btn) => { navigator.clipboard.writeText(btn.closest('.code-block').querySelector('code').innerText); btn.innerText = "تم!"; setTimeout(() => btn.innerText = "نسخ", 1500); };
 
-        function showToast(message, type = "info") {
-            const container = document.getElementById('toastContainer');
-            const toast = document.createElement('div');
-            toast.className = `toast ${type}`;
-            const icon = type === 'error' ? 'fa-circle-xmark' : type === 'success' ? 'fa-circle-check' : type === 'memory' ? 'fa-brain' : 'fa-circle-info';
-            toast.innerHTML = `<i class="fas ${icon}"></i> ${message}`;
-            container.appendChild(toast);
-            setTimeout(() => toast.classList.add('show'), 10);
-            setTimeout(() => { toast.classList.remove('show'); setTimeout(() => toast.remove(), 300); }, 3000);
+        function showToast(msg, type = "info") {
+            const c = document.getElementById('toastContainer');
+            const t = document.createElement('div');
+            t.className = `toast ${type}`;
+            const i = type === 'error' ? 'fa-circle-xmark' : type === 'success' ? 'fa-circle-check' : type === 'memory' ? 'fa-brain' : 'fa-circle-info';
+            t.innerHTML = `<i class="fas ${i}"></i> ${msg}`;
+            c.appendChild(t);
+            setTimeout(() => t.classList.add('show'), 10);
+            setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 300); }, 3000);
         }
 
-        window.handleKeyPress = (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
-        };
-
+        window.handleKeyPress = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } };
         window.toggleSidebar = () => document.getElementById('sidebar').classList.toggle('collapsed');
-        window.triggerFeature = (feature) => {
-            if (feature === 'image') {
-                if (!imageMode) toggleImageMode();
-                document.getElementById('userInput').focus();
-                return;
-            }
-            const prompts = {
-                vision: "أريد تحليل صورة. سأرفع صورة الآن.",
-                audio: "أريد تحويل نص إلى كلام أو تحليل ملف صوتي.",
-                code: "أريد مساعدة في تطوير كود برمجي. سأرفع الملف الآن."
-            };
-            document.getElementById('userInput').value = prompts[feature] || "";
+        window.triggerFeature = (f) => {
+            if (f === 'image') { if (!imageMode) toggleImageMode(); document.getElementById('userInput').focus(); return; }
+            const p = { vision: "أريد تحليل صورة. سأرفع صورة الآن.", audio: "أريد تحويل نص إلى كلام.", code: "أريد مساعدة في تطوير كود." };
+            document.getElementById('userInput').value = p[f] || "";
             document.getElementById('userInput').focus();
         };
     </script>
 
     <style>
         :root {
-            --bg-main: #09090b;
-            --bg-sidebar: #0c0c0f;
-            --bg-card: #18181b;
-            --border-color: #27272a;
-            --border-subtle: #1e1e22;
-            --text-color: #fafafa;
-            --text-secondary: #a1a1aa;
-            --text-muted: #71717a;
-            --accent: #06b6d4;
-            --accent-dim: #0891b2;
-            --accent-glow: rgba(6, 182, 212, 0.15);
-            --agent-color: #f59e0b;
-            --danger: #ef4444;
-            --success: #22c55e;
-            --purple: #a855f7;
-            --purple-glow: rgba(168, 85, 247, 0.15);
+            --bg-main: #09090b; --bg-sidebar: #0c0c0f; --bg-card: #18181b;
+            --border-color: #27272a; --border-subtle: #1e1e22;
+            --text-color: #fafafa; --text-secondary: #a1a1aa; --text-muted: #71717a;
+            --accent: #06b6d4; --accent-dim: #0891b2; --accent-glow: rgba(6,182,212,0.15);
+            --agent-color: #f59e0b; --danger: #ef4444; --success: #22c55e;
+            --purple: #a855f7; --purple-glow: rgba(168,85,247,0.15);
             --pill-input-bg: #131316;
         }
-
         * { box-sizing: border-box; margin: 0; padding: 0; }
-
-        body {
-            font-family: 'Inter', sans-serif;
-            background-color: var(--bg-main);
-            color: var(--text-color);
-            height: 100vh;
-            display: flex;
-            overflow: hidden;
-        }
+        body { font-family: 'Inter', sans-serif; background: var(--bg-main); color: var(--text-color); height: 100vh; display: flex; overflow: hidden; }
 
         .auth-screen { width: 100vw; height: 100vh; display: flex; flex-direction: column; justify-content: center; align-items: center; background: var(--bg-main); position: relative; overflow: hidden; }
-        .auth-screen::before { content: ''; position: absolute; width: 500px; height: 500px; background: radial-gradient(circle, var(--accent-glow) 0%, transparent 70%); top: 50%; left: 50%; transform: translate(-50%, -50%); animation: authGlow 4s ease-in-out infinite; }
-        @keyframes authGlow { 0%, 100% { opacity: 0.4; transform: translate(-50%, -50%) scale(1); } 50% { opacity: 0.7; transform: translate(-50%, -50%) scale(1.2); } }
+        .auth-screen::before { content: ''; position: absolute; width: 500px; height: 500px; background: radial-gradient(circle, var(--accent-glow) 0%, transparent 70%); top: 50%; left: 50%; transform: translate(-50%, -50%); animation: glow 4s ease-in-out infinite; }
+        @keyframes glow { 0%,100% { opacity: 0.4; transform: translate(-50%,-50%) scale(1); } 50% { opacity: 0.7; transform: translate(-50%,-50%) scale(1.2); } }
         .auth-logo { font-size: 48px; font-weight: 800; letter-spacing: -2px; position: relative; z-index: 1; background: linear-gradient(135deg, var(--accent), #22d3ee, var(--text-color)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
         .auth-subtitle { color: var(--text-muted); margin-top: 8px; font-size: 14px; position: relative; z-index: 1; }
         .auth-btn { background: var(--text-color); color: var(--bg-main); border: none; padding: 14px 32px; border-radius: 12px; font-weight: 600; cursor: pointer; font-size: 14px; margin-top: 32px; position: relative; z-index: 1; transition: all 0.2s; display: flex; align-items: center; gap: 10px; }
@@ -800,59 +706,63 @@
 
         .app-container { display: none; width: 100%; height: 100%; }
 
-        .sidebar { width: 270px; min-width: 270px; background-color: var(--bg-sidebar); border-left: 1px solid var(--border-color); display: flex; flex-direction: column; padding: 16px; justify-content: space-between; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
-        .sidebar.collapsed { width: 0; min-width: 0; padding: 0; overflow: hidden; border-left: none; }
+        .sidebar { width: 270px; min-width: 270px; background: var(--bg-sidebar); border-left: 1px solid var(--border-color); display: flex; flex-direction: column; padding: 16px; justify-content: space-between; transition: all 0.3s cubic-bezier(0.4,0,0.2,1); overflow: hidden; }
+        .sidebar.collapsed { width: 0; min-width: 0; padding: 0; border-left: none; }
         .sidebar-brand { display: flex; align-items: center; gap: 10px; padding: 8px 4px 20px; }
-        .brand-icon { width: 36px; height: 36px; background: linear-gradient(135deg, var(--accent), #22d3ee); border-radius: 10px; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 16px; color: #000; }
-        .brand-name { font-weight: 700; font-size: 16px; letter-spacing: -0.5px; }
+        .brand-icon { width: 36px; height: 36px; background: linear-gradient(135deg, var(--accent), #22d3ee); border-radius: 10px; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 16px; color: #000; flex-shrink: 0; }
+        .brand-name { font-weight: 700; font-size: 16px; letter-spacing: -0.5px; white-space: nowrap; }
 
         .nav-tabs { display: flex; flex-direction: column; gap: 2px; margin-bottom: 16px; background: var(--bg-card); border-radius: 12px; padding: 4px; border: 1px solid var(--border-subtle); }
         .nav-tab { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 9px; cursor: pointer; font-size: 13px; color: var(--text-muted); transition: all 0.2s; font-weight: 500; }
         .nav-tab:hover { color: var(--text-secondary); background: rgba(255,255,255,0.03); }
-        .nav-tab.active { background: rgba(6, 182, 212, 0.1); color: var(--accent); }
+        .nav-tab.active { background: rgba(6,182,212,0.1); color: var(--accent); }
 
         .new-chat-btn { display: flex; align-items: center; justify-content: center; gap: 8px; border: 1px dashed var(--border-color); padding: 10px 14px; border-radius: 10px; cursor: pointer; font-size: 13px; background: transparent; color: var(--text-muted); margin-bottom: 12px; transition: all 0.2s; width: 100%; }
         .new-chat-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-glow); }
 
         .memory-section { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 12px; padding: 12px; margin-bottom: 12px; cursor: pointer; transition: all 0.2s; }
-        .memory-section:hover { border-color: var(--accent-dim); background: rgba(6, 182, 212, 0.04); }
+        .memory-section:hover { border-color: var(--accent-dim); }
         .memory-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
         .memory-label { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
-        .memory-label i { color: var(--accent); font-size: 13px; }
+        .memory-label i { color: var(--accent); }
         .memory-count { background: var(--accent-glow); color: var(--accent); font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 10px; }
         .memory-preview { font-size: 11px; color: var(--text-muted); line-height: 1.4; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 
         .sidebar-menu { flex: 1; overflow-y: auto; list-style: none; display: flex; flex-direction: column; gap: 2px; }
+        .sidebar-menu::-webkit-scrollbar { width: 3px; }
+        .sidebar-menu::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 3px; }
         .sidebar-menu-label { font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px; color: var(--text-muted); margin: 8px 8px 6px; font-weight: 600; }
         .sidebar-menu li { padding: 9px 12px; border-radius: 8px; cursor: pointer; font-size: 12.5px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; transition: all 0.15s; }
         .sidebar-menu li:hover { background: rgba(255,255,255,0.04); color: var(--text-secondary); }
         .sidebar-menu li.active { background: var(--accent-glow); color: var(--accent); }
 
         .sidebar-footer { border-top: 1px solid var(--border-color); padding-top: 12px; display: flex; flex-direction: column; gap: 8px; }
-        .user-info { display: flex; align-items: center; gap: 10px; padding: 6px; border-radius: 10px; cursor: pointer; transition: background 0.2s; }
-        .user-info:hover { background: rgba(255,255,255,0.04); }
+        .user-info { display: flex; align-items: center; gap: 10px; padding: 6px; border-radius: 10px; }
         .user-avatar { width: 34px; height: 34px; border-radius: 50%; background: var(--bg-card); object-fit: cover; border: 2px solid var(--border-color); }
         .user-name { font-weight: 500; font-size: 13px; color: var(--text-color); }
-        .user-email { font-size: 11px; color: var(--text-muted); }
+        .user-email { font-size: 11px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 160px; }
         .logout-btn { background: transparent; border: none; color: var(--text-muted); font-size: 12px; cursor: pointer; text-align: right; padding: 4px; transition: color 0.2s; }
         .logout-btn:hover { color: var(--danger); }
 
+        /* ===== المحتوى الرئيسي ===== */
         .main-content { flex: 1; display: flex; flex-direction: column; position: relative; background: var(--bg-main); height: 100%; overflow: hidden; }
 
-        .top-bar { padding: 12px 20px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-subtle); background: rgba(9, 9, 11, 0.8); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); position: relative; z-index: 10; flex-shrink: 0; }
+        .top-bar { padding: 12px 20px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-subtle); background: rgba(9,9,11,0.8); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); z-index: 10; flex-shrink: 0; }
         .toggle-side { background: transparent; border: none; color: var(--text-muted); cursor: pointer; font-size: 18px; padding: 6px; border-radius: 8px; transition: all 0.2s; }
         .toggle-side:hover { background: rgba(255,255,255,0.06); color: var(--text-color); }
         .model-selector { font-size: 14px; font-weight: 600; color: var(--text-color); display: flex; align-items: center; gap: 6px; }
         .model-badge { font-size: 9px; font-weight: 700; padding: 2px 8px; border-radius: 6px; background: var(--accent-glow); color: var(--accent); letter-spacing: 0.5px; }
-        .model-badge.agent { background: rgba(245, 158, 11, 0.15); color: var(--agent-color); }
+        .model-badge.agent { background: rgba(245,158,11,0.15); color: var(--agent-color); }
         .top-actions { display: flex; align-items: center; gap: 6px; }
         .top-action-btn { background: transparent; border: 1px solid var(--border-subtle); color: var(--text-muted); width: 34px; height: 34px; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 13px; transition: all 0.2s; }
         .top-action-btn:hover { background: rgba(255,255,255,0.05); color: var(--text-color); border-color: var(--border-color); }
 
-        .content-area { flex: 1; overflow-y: auto; position: relative; }
-        .content-area::-webkit-scrollbar { width: 4px; }
+        /* منطقة المحتوى - التمرير الرئيسي */
+        .content-area { flex: 1; overflow-y: auto; overflow-x: hidden; position: relative; scroll-behavior: smooth; }
+        .content-area::-webkit-scrollbar { width: 6px; }
         .content-area::-webkit-scrollbar-track { background: transparent; }
-        .content-area::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 4px; }
+        .content-area::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 6px; }
+        .content-area::-webkit-scrollbar-thumb:hover { background: #3f3f46; }
 
         .welcome-screen { display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; padding: 40px 20px; min-height: 100%; }
         .welcome-greeting { font-size: 44px; font-weight: 700; letter-spacing: -1.5px; margin-bottom: 8px; }
@@ -860,19 +770,20 @@
         .welcome-sub { color: var(--text-muted); font-size: 15px; max-width: 480px; line-height: 1.6; margin-bottom: 40px; }
 
         .feature-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; max-width: 680px; width: 100%; }
-        .feature-card { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 16px; padding: 20px 14px; cursor: pointer; transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1); text-align: center; }
-        .feature-card:hover { border-color: var(--accent-dim); background: rgba(6, 182, 212, 0.06); transform: translateY(-3px); box-shadow: 0 8px 24px rgba(6, 182, 212, 0.08); }
+        .feature-card { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 16px; padding: 20px 14px; cursor: pointer; transition: all 0.25s cubic-bezier(0.4,0,0.2,1); text-align: center; }
+        .feature-card:hover { border-color: var(--accent-dim); background: rgba(6,182,212,0.06); transform: translateY(-3px); box-shadow: 0 8px 24px rgba(6,182,212,0.08); }
         .feature-icon { width: 44px; height: 44px; border-radius: 12px; display: flex; align-items: center; justify-content: center; margin: 0 auto 12px; font-size: 18px; }
-        .feature-card:nth-child(1) .feature-icon { background: rgba(6, 182, 212, 0.12); color: var(--accent); }
+        .feature-card:nth-child(1) .feature-icon { background: rgba(6,182,212,0.12); color: var(--accent); }
         .feature-card:nth-child(2) .feature-icon { background: var(--purple-glow); color: var(--purple); }
-        .feature-card:nth-child(3) .feature-icon { background: rgba(34, 197, 94, 0.12); color: #22c55e; }
-        .feature-card:nth-child(4) .feature-icon { background: rgba(245, 158, 11, 0.12); color: #f59e0b; }
+        .feature-card:nth-child(3) .feature-icon { background: rgba(34,197,94,0.12); color: #22c55e; }
+        .feature-card:nth-child(4) .feature-icon { background: rgba(245,158,11,0.12); color: #f59e0b; }
         .feature-title { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
         .feature-desc { font-size: 11px; color: var(--text-muted); line-height: 1.4; }
 
-        .chat-messages { display: none; flex-direction: column; padding: 20px 0 20px; gap: 24px; min-height: 100%; }
+        /* الرسائل */
+        .chat-messages { display: none; flex-direction: column; padding: 20px 0 40px; gap: 24px; }
 
-        .message-wrapper { display: flex; gap: 12px; max-width: 780px; width: 100%; margin: 0 auto; padding: 0 24px; animation: msgIn 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
+        .message-wrapper { display: flex; gap: 12px; max-width: 780px; width: 100%; margin: 0 auto; padding: 0 24px; animation: msgIn 0.3s ease; }
         @keyframes msgIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
         .msg-avatar { flex-shrink: 0; }
         .msg-avatar img { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; }
@@ -886,11 +797,11 @@
         .loading-dots span { width: 8px; height: 8px; background: var(--accent); border-radius: 50%; animation: dotPulse 1.4s ease-in-out infinite; }
         .loading-dots span:nth-child(2) { animation-delay: 0.2s; }
         .loading-dots span:nth-child(3) { animation-delay: 0.4s; }
-        @keyframes dotPulse { 0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; } 40% { transform: scale(1); opacity: 1; } }
+        @keyframes dotPulse { 0%,80%,100% { transform: scale(0.6); opacity: 0.4; } 40% { transform: scale(1); opacity: 1; } }
         .message.system-error { color: var(--danger); font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
 
         .thinking-container { margin-bottom: 14px; border: 1px solid var(--border-subtle); border-radius: 12px; overflow: hidden; background: rgba(255,255,255,0.01); }
-        .thinking-header { padding: 10px 14px; display: flex; align-items: center; justify-content: space-between; cursor: pointer; user-select: none; transition: background 0.2s; }
+        .thinking-header { padding: 10px 14px; display: flex; align-items: center; justify-content: space-between; cursor: pointer; user-select: none; }
         .thinking-header:hover { background: rgba(255,255,255,0.02); }
         .think-label { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: var(--accent); }
         .arrow-icon { font-size: 10px; color: var(--text-muted); transition: transform 0.2s; }
@@ -901,16 +812,16 @@
 
         .code-block { border: 1px solid var(--border-color); border-radius: 10px; overflow: hidden; margin: 12px 0; background: #0d0d10; }
         .code-header { display: flex; justify-content: space-between; align-items: center; padding: 8px 14px; background: rgba(255,255,255,0.03); border-bottom: 1px solid var(--border-subtle); font-size: 11px; color: var(--text-muted); }
-        .code-header button { background: transparent; border: 1px solid var(--border-subtle); color: var(--text-muted); padding: 3px 10px; border-radius: 6px; cursor: pointer; font-size: 11px; transition: all 0.15s; }
+        .code-header button { background: transparent; border: 1px solid var(--border-subtle); color: var(--text-muted); padding: 3px 10px; border-radius: 6px; cursor: pointer; font-size: 11px; }
         .code-header button:hover { background: rgba(255,255,255,0.06); color: var(--text-color); }
         .code-block pre { padding: 14px; overflow-x: auto; font-size: 12.5px; line-height: 1.6; font-family: 'Courier New', monospace; }
-        .inline-code { background: rgba(6, 182, 212, 0.1); color: var(--accent); padding: 2px 6px; border-radius: 4px; font-size: 13px; font-family: 'Courier New', monospace; }
+        .inline-code { background: rgba(6,182,212,0.1); color: var(--accent); padding: 2px 6px; border-radius: 4px; font-size: 13px; font-family: 'Courier New', monospace; }
 
+        /* صور مولّدة */
         .image-gen-result { width: 100%; }
         .gen-label { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; color: var(--purple); background: var(--purple-glow); padding: 4px 12px; border-radius: 8px; margin-bottom: 12px; }
-        .gen-image-container { border-radius: 16px; overflow: hidden; background: var(--bg-card); border: 1px solid var(--border-subtle); margin-bottom: 12px; position: relative; }
-        .gen-image { width: 100%; max-width: 512px; display: block; border-radius: 15px; cursor: pointer; transition: transform 0.3s; }
-        .gen-image:hover { transform: scale(1.01); }
+        .gen-image-container { border-radius: 16px; overflow: hidden; background: var(--bg-card); border: 1px solid var(--border-subtle); margin-bottom: 12px; }
+        .gen-image { width: 100%; max-width: 512px; display: block; border-radius: 15px; }
         .gen-image-skeleton { width: 100%; max-width: 512px; aspect-ratio: 1; display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 30px; }
         .shimmer-line { width: 80%; height: 14px; background: linear-gradient(90deg, var(--border-subtle) 25%, var(--border-color) 50%, var(--border-subtle) 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; border-radius: 8px; margin-bottom: 10px; }
         .shimmer-line.short { width: 50%; }
@@ -918,43 +829,44 @@
         .gen-actions { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
         .gen-action-btn { background: var(--bg-card); border: 1px solid var(--border-subtle); color: var(--text-secondary); padding: 7px 14px; border-radius: 10px; cursor: pointer; font-size: 12px; font-weight: 500; transition: all 0.15s; display: flex; align-items: center; gap: 6px; font-family: 'Inter', sans-serif; }
         .gen-action-btn:hover { background: rgba(255,255,255,0.06); border-color: var(--border-color); color: var(--text-color); }
+        .gen-action-btn:disabled { opacity: 0.4; cursor: not-allowed; }
         .gen-prompt-detail { display: none; background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 12px; }
         .gen-prompt-detail.expanded { display: block; }
         .gen-prompt-label { font-size: 11px; font-weight: 600; color: var(--text-muted); margin-bottom: 6px; }
         .gen-prompt-text { font-size: 12px; color: var(--text-secondary); line-height: 1.6; white-space: pre-wrap; font-family: 'Courier New', monospace; }
 
-        .input-area { flex-shrink: 0; padding: 0 20px 20px; display: flex; flex-direction: column; align-items: center; gap: 8px; position: relative; z-index: 20; background: var(--bg-main); }
+        /* صندوق الإدخال */
+        .input-area { flex-shrink: 0; padding: 0 20px 20px; display: flex; flex-direction: column; align-items: center; gap: 8px; z-index: 20; background: var(--bg-main); }
         .input-glow { position: absolute; bottom: 0; left: 50%; transform: translateX(-50%); width: 60%; height: 80px; background: radial-gradient(ellipse, var(--accent-glow) 0%, transparent 70%); pointer-events: none; opacity: 0.5; }
         .file-badge { background: var(--bg-card); border: 1px solid var(--border-subtle); align-self: flex-start; padding: 6px 14px; border-radius: 10px; display: none; align-items: center; gap: 10px; font-size: 12px; color: var(--text-secondary); margin-right: 8px; max-width: 720px; }
         .file-badge i { color: var(--accent); }
-        .file-badge button { background: transparent; border: none; color: var(--danger); cursor: pointer; font-size: 13px; padding: 0 2px; }
+        .file-badge button { background: transparent; border: none; color: var(--danger); cursor: pointer; font-size: 13px; }
         .input-container { background: var(--pill-input-bg); border: 1px solid var(--border-color); border-radius: 18px; padding: 6px 8px 6px 16px; display: flex; align-items: center; gap: 6px; transition: border-color 0.2s, box-shadow 0.2s; width: 100%; max-width: 720px; }
-        .input-container:focus-within { border-color: var(--accent-dim); box-shadow: 0 0 0 3px var(--accent-glow), 0 4px 20px rgba(6, 182, 212, 0.08); }
-        .input-container.image-mode { border-color: rgba(168, 85, 247, 0.4); }
-        .input-container.image-mode:focus-within { border-color: var(--purple); box-shadow: 0 0 0 3px var(--purple-glow), 0 4px 20px rgba(168, 85, 247, 0.08); }
+        .input-container:focus-within { border-color: var(--accent-dim); box-shadow: 0 0 0 3px var(--accent-glow); }
+        .input-container.image-mode { border-color: rgba(168,85,247,0.4); }
+        .input-container.image-mode:focus-within { border-color: var(--purple); box-shadow: 0 0 0 3px var(--purple-glow); }
         .input-container input { flex: 1; background: transparent; border: none; color: var(--text-color); padding: 12px 4px; font-size: 14px; outline: none; font-family: 'Inter', sans-serif; min-width: 0; }
         .input-container input::placeholder { color: var(--text-muted); }
-        .icon-btn-left { background: transparent; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; border-radius: 10px; transition: all 0.15s; flex-shrink: 0; }
+        .icon-btn-left { background: transparent; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; border-radius: 10px; flex-shrink: 0; }
         .icon-btn-left:hover { color: var(--text-color); background: rgba(255,255,255,0.06); }
         .image-mode-btn { background: transparent; border: none; color: var(--text-muted); font-size: 16px; cursor: pointer; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; border-radius: 10px; transition: all 0.2s; flex-shrink: 0; position: relative; }
         .image-mode-btn:hover { color: var(--purple); background: var(--purple-glow); }
-        .image-mode-btn.active { color: var(--purple); background: var(--purple-glow); box-shadow: 0 0 0 2px rgba(168, 85, 247, 0.3); }
+        .image-mode-btn.active { color: var(--purple); background: var(--purple-glow); box-shadow: 0 0 0 2px rgba(168,85,247,0.3); }
         .image-mode-btn.active::after { content: ''; position: absolute; bottom: -2px; right: -2px; width: 8px; height: 8px; background: var(--purple); border-radius: 50%; border: 2px solid var(--bg-main); }
-        .send-btn { background: var(--accent); color: #000; border: none; width: 36px; height: 36px; border-radius: 10px; display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 14px; transition: all 0.15s; font-weight: 700; flex-shrink: 0; }
+        .send-btn { background: var(--accent); color: #000; border: none; width: 36px; height: 36px; border-radius: 10px; display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 14px; font-weight: 700; flex-shrink: 0; }
         .send-btn:hover { background: #22d3ee; transform: scale(1.05); }
         .send-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
 
-        .memory-panel { position: fixed; top: 0; right: -400px; width: 380px; height: 100vh; background: var(--bg-sidebar); border-left: 1px solid var(--border-color); z-index: 100; display: flex; flex-direction: column; transition: right 0.3s cubic-bezier(0.4, 0, 0.2, 1); box-shadow: -10px 0 40px rgba(0,0,0,0.5); }
+        .memory-panel { position: fixed; top: 0; right: -400px; width: 380px; height: 100vh; background: var(--bg-sidebar); border-left: 1px solid var(--border-color); z-index: 100; display: flex; flex-direction: column; transition: right 0.3s cubic-bezier(0.4,0,0.2,1); box-shadow: -10px 0 40px rgba(0,0,0,0.5); }
         .memory-panel.open { right: 0; }
         .memory-panel-header { padding: 20px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; }
         .memory-panel-title { font-size: 16px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
         .memory-panel-title i { color: var(--accent); }
         .memory-panel-actions { display: flex; gap: 6px; }
-        .mem-action-btn { background: var(--bg-card); border: 1px solid var(--border-subtle); color: var(--text-muted); padding: 6px 12px; border-radius: 8px; cursor: pointer; font-size: 11px; font-weight: 600; transition: all 0.15s; display: flex; align-items: center; gap: 6px; }
+        .mem-action-btn { background: var(--bg-card); border: 1px solid var(--border-subtle); color: var(--text-muted); padding: 6px 12px; border-radius: 8px; cursor: pointer; font-size: 11px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
         .mem-action-btn:hover { background: rgba(255,255,255,0.06); color: var(--text-color); }
-        .mem-action-btn.danger:hover { background: rgba(239, 68, 68, 0.1); color: var(--danger); border-color: rgba(239, 68, 68, 0.3); }
-        .mem-action-btn.save { background: var(--accent-glow); color: var(--accent); border-color: rgba(6, 182, 212, 0.3); }
-        .mem-action-btn.save:hover { background: rgba(6, 182, 212, 0.2); }
+        .mem-action-btn.danger:hover { background: rgba(239,68,68,0.1); color: var(--danger); border-color: rgba(239,68,68,0.3); }
+        .mem-action-btn.save { background: var(--accent-glow); color: var(--accent); border-color: rgba(6,182,212,0.3); }
         .memory-panel-body { flex: 1; padding: 20px; overflow-y: auto; }
         .memory-edit-area { width: 100%; min-height: 300px; background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 12px; padding: 16px; color: var(--text-color); font-size: 13px; line-height: 1.7; font-family: 'Inter', sans-serif; resize: vertical; outline: none; }
         .memory-edit-area:focus { border-color: var(--accent-dim); }
@@ -964,16 +876,12 @@
         .toast-container { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); z-index: 200; display: flex; flex-direction: column; gap: 8px; align-items: center; }
         .toast { padding: 12px 20px; border-radius: 12px; font-size: 13px; font-weight: 500; display: flex; align-items: center; gap: 8px; opacity: 0; transform: translateY(-12px); transition: all 0.3s; backdrop-filter: blur(12px); box-shadow: 0 8px 32px rgba(0,0,0,0.4); }
         .toast.show { opacity: 1; transform: translateY(0); }
-        .toast.info { background: rgba(6, 182, 212, 0.15); color: var(--accent); border: 1px solid rgba(6, 182, 212, 0.3); }
-        .toast.success { background: rgba(34, 197, 94, 0.15); color: var(--success); border: 1px solid rgba(34, 197, 94, 0.3); }
-        .toast.error { background: rgba(239, 68, 68, 0.15); color: var(--danger); border: 1px solid rgba(239, 68, 68, 0.3); }
-        .toast.memory { background: rgba(168, 85, 247, 0.15); color: var(--purple); border: 1px solid rgba(168, 85, 247, 0.3); }
+        .toast.info { background: rgba(6,182,212,0.15); color: var(--accent); border: 1px solid rgba(6,182,212,0.3); }
+        .toast.success { background: rgba(34,197,94,0.15); color: var(--success); border: 1px solid rgba(34,197,94,0.3); }
+        .toast.error { background: rgba(239,68,68,0.15); color: var(--danger); border: 1px solid rgba(239,68,68,0.3); }
+        .toast.memory { background: rgba(168,85,247,0.15); color: var(--purple); border: 1px solid rgba(168,85,247,0.3); }
 
-        .bg-grid { position: fixed; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 0; background-image: radial-gradient(circle at 20% 30%, rgba(6, 182, 212, 0.03) 0%, transparent 50%), radial-gradient(circle at 80% 70%, rgba(168, 85, 247, 0.03) 0%, transparent 50%); }
-
-        .sidebar-menu::-webkit-scrollbar { width: 3px; }
-        .sidebar-menu::-webkit-scrollbar-track { background: transparent; }
-        .sidebar-menu::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 3px; }
+        .bg-grid { position: fixed; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 0; background-image: radial-gradient(circle at 20% 30%, rgba(6,182,212,0.03) 0%, transparent 50%), radial-gradient(circle at 80% 70%, rgba(168,85,247,0.03) 0%, transparent 50%); }
 
         @media (max-width: 768px) {
             .sidebar { position: fixed; right: 0; top: 0; height: 100vh; z-index: 50; box-shadow: -4px 0 24px rgba(0,0,0,0.5); }
@@ -985,132 +893,94 @@
             .memory-panel { width: 320px; right: -320px; }
             .gen-image { max-width: 100%; }
         }
-
-        @media (prefers-reduced-motion: reduce) {
-            *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
-        }
+        @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; } }
     </style>
 </head>
 <body>
 
-    <div class="bg-grid"></div>
-    <div class="toast-container" id="toastContainer"></div>
+<div class="bg-grid"></div>
+<div class="toast-container" id="toastContainer"></div>
 
-    <div class="auth-screen" id="authScreen">
-        <div class="auth-logo">Keo Studio AI</div>
-        <p class="auth-subtitle">Designed by Karim Hussein</p>
-        <button class="auth-btn" onclick="loginWithGoogle()"><i class="fab fa-google"></i> تسجيل الدخول عبر Google</button>
-    </div>
+<div class="auth-screen" id="authScreen">
+    <div class="auth-logo">Keo Studio AI</div>
+    <p class="auth-subtitle">Designed by Karim Hussein</p>
+    <button class="auth-btn" onclick="loginWithGoogle()"><i class="fab fa-google"></i> تسجيل الدخول عبر Google</button>
+</div>
 
-    <div class="app-container" id="appContainer">
-
-        <div class="sidebar" id="sidebar">
-            <div>
-                <div class="sidebar-brand">
-                    <div class="brand-icon">K</div>
-                    <div class="brand-name">Keo Studio AI</div>
-                </div>
-                <div class="nav-tabs">
-                    <div class="nav-tab active" id="chatTab" onclick="switchMode('chat')"><i class="fas fa-message" style="font-size:13px;"></i> المحادثات العامة</div>
-                    <div class="nav-tab" id="agentTab" onclick="switchMode('agent')"><i class="fas fa-bolt" style="font-size:13px;"></i> وضع المطور</div>
-                </div>
-                <button class="new-chat-btn" onclick="createNewChat()"><i class="fas fa-plus" style="font-size:12px;"></i><span>محادثة جديدة</span></button>
-                <div class="memory-section" onclick="toggleMemoryPanel()">
-                    <div class="memory-header">
-                        <div class="memory-label"><i class="fas fa-brain"></i> الذاكرة</div>
-                        <div class="memory-count" id="memoryCount">0</div>
-                    </div>
-                    <div class="memory-preview" id="memoryPreview">لا توجد ذكريات محفوظة بعد</div>
-                </div>
-                <ul class="sidebar-menu">
-                    <div class="sidebar-menu-label">المحادثات المحفوظة</div>
-                    <div id="previousChats"></div>
-                </ul>
+<div class="app-container" id="appContainer">
+    <div class="sidebar" id="sidebar">
+        <div>
+            <div class="sidebar-brand"><div class="brand-icon">K</div><div class="brand-name">Keo Studio AI</div></div>
+            <div class="nav-tabs">
+                <div class="nav-tab active" id="chatTab" onclick="switchMode('chat')"><i class="fas fa-message" style="font-size:13px;"></i> المحادثات العامة</div>
+                <div class="nav-tab" id="agentTab" onclick="switchMode('agent')"><i class="fas fa-bolt" style="font-size:13px;"></i> وضع المطور</div>
             </div>
-            <div class="sidebar-footer">
-                <div class="user-info">
-                    <img class="user-avatar" id="userAvatarImg" src="https://ui-avatars.com/api/?name=U&background=333&color=fff&size=32" alt="صورة المستخدم">
-                    <div>
-                        <div class="user-name" id="userNameDisplay">المستخدم</div>
-                        <div class="user-email" id="userEmailDisplay"></div>
-                    </div>
-                </div>
-                <button class="logout-btn" onclick="logout()"><i class="fas fa-sign-out-alt"></i> تسجيل الخروج</button>
+            <button class="new-chat-btn" onclick="createNewChat()"><i class="fas fa-plus" style="font-size:12px;"></i><span>محادثة جديدة</span></button>
+            <div class="memory-section" onclick="toggleMemoryPanel()">
+                <div class="memory-header"><div class="memory-label"><i class="fas fa-brain"></i> الذاكرة</div><div class="memory-count" id="memoryCount">0</div></div>
+                <div class="memory-preview" id="memoryPreview">لا توجد ذكريات محفوظة بعد</div>
             </div>
+            <ul class="sidebar-menu"><div class="sidebar-menu-label">المحادثات المحفوظة</div><div id="previousChats"></div></ul>
         </div>
-
-        <div class="main-content">
-            <div class="top-bar">
-                <button class="toggle-side" onclick="toggleSidebar()" aria-label="تبديل القائمة"><i class="fas fa-bars"></i></button>
-                <div class="model-selector" id="modelTitle"><i class="fas fa-brain" style="color:var(--accent);margin-left:6px;"></i> Keo Studio AI <span class="model-badge">Pro</span></div>
-                <div class="top-actions">
-                    <button class="top-action-btn" onclick="toggleMemoryPanel()" title="الذاكرة" aria-label="فتح الذاكرة"><i class="fas fa-brain"></i></button>
-                </div>
+        <div class="sidebar-footer">
+            <div class="user-info">
+                <img class="user-avatar" id="userAvatarImg" src="https://ui-avatars.com/api/?name=U&background=333&color=fff&size=32" alt="">
+                <div><div class="user-name" id="userNameDisplay">المستخدم</div><div class="user-email" id="userEmailDisplay"></div></div>
             </div>
-
-            <div class="content-area" id="contentArea">
-                <div class="welcome-screen" id="welcomeScreen">
-                    <div class="welcome-greeting">Hi, <span id="welcomeUserName">User</span></div>
-                    <p class="welcome-sub" id="welcomeSub">تفاعل مع Keo Studio AI واستكشف العالم الإبداعي بلا حدود.</p>
-                    <div class="feature-cards" id="featureCards">
-                        <div class="feature-card" onclick="triggerFeature('vision')">
-                            <div class="feature-icon"><i class="fas fa-eye"></i></div>
-                            <div class="feature-title">Keo Vision</div>
-                            <div class="feature-desc">تحليل الصور واستخراج النصوص</div>
-                        </div>
-                        <div class="feature-card" onclick="triggerFeature('image')">
-                            <div class="feature-icon"><i class="fas fa-palette"></i></div>
-                            <div class="feature-title">Keo Image</div>
-                            <div class="feature-desc">توليد صور من وصفك النصي</div>
-                        </div>
-                        <div class="feature-card" onclick="triggerFeature('audio')">
-                            <div class="feature-icon"><i class="fas fa-microphone"></i></div>
-                            <div class="feature-title">Keo Audio</div>
-                            <div class="feature-desc">تحويل النصوص إلى كلام</div>
-                        </div>
-                        <div class="feature-card" onclick="triggerFeature('code')">
-                            <div class="feature-icon"><i class="fas fa-code"></i></div>
-                            <div class="feature-title">Keo Code</div>
-                            <div class="feature-desc">مساعدة في تطوير الأكواد</div>
-                        </div>
-                    </div>
-                </div>
-                <div class="chat-messages" id="chatMessages"></div>
-            </div>
-
-            <div class="input-area">
-                <div class="input-glow"></div>
-                <div class="file-badge" id="fileBadge">
-                    <i id="fileBadgeIcon" class="fas fa-image"></i>
-                    <span id="fileBadgeText">image.png</span>
-                    <button onclick="removeUploadedFile()"><i class="fas fa-xmark"></i></button>
-                </div>
-                <div class="input-container" id="inputContainer">
-                    <input type="file" id="hiddenFileInput" style="display:none;" accept=".txt,.json,.csv,.js,.html,.css,.py,image/png,image/jpeg,image/jpg,image/webp" onchange="handleFileUpload(event)">
-                    <button class="icon-btn-left" onclick="triggerFileUpload()" title="رفع ملف" aria-label="رفع ملف"><i class="fas fa-paperclip"></i></button>
-                    <button class="image-mode-btn" id="imageModeBtn" onclick="toggleImageMode()" title="وضع توليد الصور" aria-label="توليد الصور"><i class="fas fa-palette"></i></button>
-                    <input type="text" id="userInput" placeholder="How can I help you today?" onkeydown="handleKeyPress(event)">
-                    <button class="send-btn" id="sendBtn" onclick="sendMessage()" aria-label="إرسال"><i class="fas fa-arrow-up"></i></button>
-                </div>
-            </div>
+            <button class="logout-btn" onclick="logout()"><i class="fas fa-sign-out-alt"></i> تسجيل الخروج</button>
         </div>
     </div>
 
-    <div class="memory-overlay" id="memoryOverlay" onclick="toggleMemoryPanel()"></div>
-    <div class="memory-panel" id="memoryPanel">
-        <div class="memory-panel-header">
-            <div class="memory-panel-title"><i class="fas fa-brain"></i> ذاكرة Keo Studio AI</div>
-            <div class="memory-panel-actions">
-                <button class="mem-action-btn danger" onclick="clearMemory()"><i class="fas fa-trash"></i> مسح</button>
-                <button class="mem-action-btn save" onclick="saveMemoryEdit()"><i class="fas fa-check"></i> حفظ</button>
-                <button class="mem-action-btn" onclick="toggleMemoryPanel()"><i class="fas fa-xmark"></i></button>
+    <div class="main-content">
+        <div class="top-bar">
+            <button class="toggle-side" onclick="toggleSidebar()"><i class="fas fa-bars"></i></button>
+            <div class="model-selector" id="modelTitle"><i class="fas fa-brain" style="color:var(--accent);margin-left:6px;"></i> Keo Studio AI <span class="model-badge">Pro</span></div>
+            <div class="top-actions"><button class="top-action-btn" onclick="toggleMemoryPanel()" title="الذاكرة"><i class="fas fa-brain"></i></button></div>
+        </div>
+
+        <div class="content-area" id="contentArea">
+            <div class="welcome-screen" id="welcomeScreen">
+                <div class="welcome-greeting">Hi, <span id="welcomeUserName">User</span></div>
+                <p class="welcome-sub" id="welcomeSub">تفاعل مع Keo Studio AI واستكشف العالم الإبداعي بلا حدود.</p>
+                <div class="feature-cards" id="featureCards">
+                    <div class="feature-card" onclick="triggerFeature('vision')"><div class="feature-icon"><i class="fas fa-eye"></i></div><div class="feature-title">Keo Vision</div><div class="feature-desc">تحليل الصور واستخراج النصوص</div></div>
+                    <div class="feature-card" onclick="triggerFeature('image')"><div class="feature-icon"><i class="fas fa-palette"></i></div><div class="feature-title">Keo Image</div><div class="feature-desc">توليد صور من وصفك النصي</div></div>
+                    <div class="feature-card" onclick="triggerFeature('audio')"><div class="feature-icon"><i class="fas fa-microphone"></i></div><div class="feature-title">Keo Audio</div><div class="feature-desc">تحويل النصوص إلى كلام</div></div>
+                    <div class="feature-card" onclick="triggerFeature('code')"><div class="feature-icon"><i class="fas fa-code"></i></div><div class="feature-title">Keo Code</div><div class="feature-desc">مساعدة في تطوير الأكواد</div></div>
+                </div>
+            </div>
+            <div class="chat-messages" id="chatMessages"></div>
+        </div>
+
+        <div class="input-area">
+            <div class="input-glow"></div>
+            <div class="file-badge" id="fileBadge"><i id="fileBadgeIcon" class="fas fa-image"></i><span id="fileBadgeText"></span><button onclick="removeUploadedFile()"><i class="fas fa-xmark"></i></button></div>
+            <div class="input-container" id="inputContainer">
+                <input type="file" id="hiddenFileInput" style="display:none;" accept=".txt,.json,.csv,.js,.html,.css,.py,image/png,image/jpeg,image/jpg,image/webp" onchange="handleFileUpload(event)">
+                <button class="icon-btn-left" onclick="triggerFileUpload()"><i class="fas fa-paperclip"></i></button>
+                <button class="image-mode-btn" id="imageModeBtn" onclick="toggleImageMode()"><i class="fas fa-palette"></i></button>
+                <input type="text" id="userInput" placeholder="How can I help you today?" onkeydown="handleKeyPress(event)">
+                <button class="send-btn" id="sendBtn" onclick="sendMessage()"><i class="fas fa-arrow-up"></i></button>
             </div>
         </div>
-        <div class="memory-panel-body">
-            <p style="font-size:12px;color:var(--text-muted);margin-bottom:16px;line-height:1.6;">هنا تُحفظ المعلومات المهمة التي يتعلمها المساعد عنك من محادثاتك. يمكنك التعديل أو الإضافة يدوياً أيضاً.</p>
-            <div class="memory-edit-area" id="memoryViewContent" contenteditable="true" style="outline:none;"></div>
+    </div>
+</div>
+
+<div class="memory-overlay" id="memoryOverlay" onclick="toggleMemoryPanel()"></div>
+<div class="memory-panel" id="memoryPanel">
+    <div class="memory-panel-header">
+        <div class="memory-panel-title"><i class="fas fa-brain"></i> ذاكرة Keo Studio AI</div>
+        <div class="memory-panel-actions">
+            <button class="mem-action-btn danger" onclick="clearMemory()"><i class="fas fa-trash"></i> مسح</button>
+            <button class="mem-action-btn save" onclick="saveMemoryEdit()"><i class="fas fa-check"></i> حفظ</button>
+            <button class="mem-action-btn" onclick="toggleMemoryPanel()"><i class="fas fa-xmark"></i></button>
         </div>
     </div>
+    <div class="memory-panel-body">
+        <p style="font-size:12px;color:var(--text-muted);margin-bottom:16px;line-height:1.6;">هنا تُحفظ المعلومات المهمة من محادثاتك. يمكنك التعديل يدوياً.</p>
+        <div class="memory-edit-area" id="memoryViewContent" contenteditable="true" style="outline:none;"></div>
+    </div>
+</div>
 
 </body>
 </html>
