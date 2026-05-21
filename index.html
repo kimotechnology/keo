@@ -38,7 +38,6 @@
         let conversationHistory = [];
         let isGenerating = false;
 
-        // تسجيل الدخول
         window.loginWithGoogle = async () => {
             try {
                 const result = await signInWithPopup(auth, provider);
@@ -64,7 +63,6 @@
             }
         }
 
-        // تحميل الذاكرة من Firebase
         async function loadMemory(uid) {
             const memRef = ref(db, `users/${uid}/memory`);
             const snap = await get(memRef);
@@ -76,7 +74,6 @@
             updateMemoryUI();
         }
 
-        // حفظ الذاكرة في Firebase
         async function saveMemory(uid, newMemory) {
             const memRef = ref(db, `users/${uid}/memory`);
             await set(memRef, newMemory);
@@ -84,7 +81,6 @@
             updateMemoryUI();
         }
 
-        // تحديث واجهة الذاكرة
         function updateMemoryUI() {
             const memCount = document.getElementById('memoryCount');
             const memPreview = document.getElementById('memoryPreview');
@@ -101,10 +97,17 @@
             }
         }
 
-        // نافذة عرض الذاكرة
         window.toggleMemoryPanel = () => {
             const panel = document.getElementById('memoryPanel');
-            panel.classList.toggle('open');
+            const overlay = document.getElementById('memoryOverlay');
+            const isOpen = panel.classList.contains('open');
+            if (isOpen) {
+                panel.classList.remove('open');
+                overlay.classList.remove('open');
+            } else {
+                panel.classList.add('open');
+                overlay.classList.add('open');
+            }
         };
 
         window.clearMemory = async () => {
@@ -120,7 +123,6 @@
             showToast("تم حفظ التعديلات على الذاكرة", "success");
         };
 
-        // التبديل بين الأوضاع
         window.switchMode = (mode) => {
             currentMode = mode;
             document.querySelectorAll('.nav-tab').forEach(tab => tab.classList.remove('active'));
@@ -128,17 +130,14 @@
                 document.getElementById('chatTab').classList.add('active');
                 document.getElementById('modelTitle').innerHTML = '<i class="fas fa-brain" style="color:var(--accent);margin-left:6px;"></i> Keo Studio AI <span class="model-badge">Pro</span>';
                 document.getElementById('welcomeSub').innerText = "تفاعل مع Keo Studio AI واستكشف العالم الإبداعي بلا حدود.";
-                document.getElementById('featureCards').style.display = 'grid';
             } else {
                 document.getElementById('agentTab').classList.add('active');
                 document.getElementById('modelTitle').innerHTML = '<i class="fas fa-bolt" style="color:#f59e0b;margin-left:6px;"></i> Keo Developer Agent <span class="model-badge agent">Agent</span>';
                 document.getElementById('welcomeSub').innerText = "وضع المطور الذكي: رفع الأكواد والصور، طلب الحلول الشاملة بصلاحيات كاملة.";
-                document.getElementById('featureCards').style.display = 'grid';
             }
             createNewChat();
         };
 
-        // مراقبة حالة المستخدم
         onAuthStateChanged(auth, (user) => {
             if (user) {
                 document.getElementById('authScreen').style.display = 'none';
@@ -146,12 +145,11 @@
 
                 const userFirstName = user.displayName ? user.displayName.split(' ')[0] : "User";
                 document.getElementById('userNameDisplay').innerText = user.displayName || "المستخدم";
+                document.getElementById('userEmailDisplay').innerText = user.email || "";
                 document.getElementById('welcomeUserName').innerText = userFirstName;
-                document.getElementById('userFirstName').innerText = userFirstName;
 
                 if (user.photoURL) {
                     document.getElementById('userAvatarImg').src = user.photoURL;
-                    document.getElementById('userAvatarImg2').src = user.photoURL;
                 }
 
                 loadMemory(user.uid);
@@ -207,7 +205,6 @@
             }
         }
 
-        // رفع الملفات
         window.triggerFileUpload = () => document.getElementById('hiddenFileInput').click();
         window.handleFileUpload = (event) => {
             const file = event.target.files[0];
@@ -252,7 +249,6 @@
             document.getElementById('hiddenFileInput').value = "";
         };
 
-        // إرسال الرسالة مع الذاكرة وسجل المحادثة
         window.sendMessage = async (overrideText) => {
             if (isGenerating) return;
             const userInput = document.getElementById('userInput');
@@ -285,10 +281,9 @@
 
             const loadingId = appendMessageElement('', 'bot-loading');
 
-            // إعداد التعليمات مع الذاكرة
             let memoryContext = "";
             if (userMemory && userMemory.trim().length > 0) {
-                memoryContext = `\n\n[User Memory - Important information you remember about this user]:\n${userMemory}\n[End of Memory - Use this context to personalize responses]`;
+                memoryContext = `\n\n[User Memory - Important information you remember about this user]:\n${userMemory}\n[End of Memory]`;
             }
 
             let systemInstruction = `You are Keo Studio AI, a high-fidelity intelligence assistant created by Karim Hussein. You MUST always output your step-by-step reasoning inside _hresult think  and  /think  tags first, then output your final response. You communicate primarily in Arabic but can use English when appropriate. Be helpful, creative, and thorough.${memoryContext}`;
@@ -314,10 +309,8 @@
                 userContent = promptText;
             }
 
-            // إضافة لسجل المحادثة
             conversationHistory.push({ role: 'user', content: userContent });
 
-            // بناء رسائل الـ API مع آخر 10 رسائل فقط
             const apiMessages = [
                 { role: 'system', content: systemInstruction },
                 ...conversationHistory.slice(-10)
@@ -348,8 +341,6 @@
                     appendMessageElement(rawReply, 'bot');
                     push(msgListRef, { text: rawReply, sender: 'bot' });
                     conversationHistory.push({ role: 'assistant', content: rawReply });
-
-                    // تحديث الذاكرة تلقائياً
                     await updateMemoryFromConversation(user.uid, messageText, rawReply);
                 } else {
                     appendMessageElement('حدث خطأ في صياغة الاستجابة. حاول مرة أخرى.', 'system-error');
@@ -365,9 +356,7 @@
             document.getElementById('sendBtn').innerHTML = '<i class="fas fa-arrow-up"></i>';
         };
 
-        // تحديث الذاكرة من المحادثة
         async function updateMemoryFromConversation(uid, userMsg, botReply) {
-            // فحص إذا كانت الرسالة تحتوي معلومات شخصية
             const personalKeywords = ['اسمي', 'اسمي هو', 'أنا أعمل', 'عمري', 'أسكن', 'أعيش', 'بحب', 'بكره', 'مفضل', 'My name', 'I am', 'I work', 'I live', 'I like', 'my favorite'];
             const hasPersonalInfo = personalKeywords.some(kw => userMsg.toLowerCase().includes(kw.toLowerCase()));
 
@@ -387,10 +376,7 @@
                                 role: "system",
                                 content: `You are a memory extraction assistant. Extract ONLY factual personal information about the user from their message. Current memory: ${userMemory || "empty"}. Return ONLY new/updated facts, one per line. If no new personal info, return empty. Arabic or English as appropriate.`
                             },
-                            {
-                                role: "user",
-                                content: `User said: "${userMsg}"`
-                            }
+                            { role: "user", content: `User said: "${userMsg}"` }
                         ],
                         temperature: 0.1,
                         max_tokens: 200
@@ -406,12 +392,9 @@
                         showToast("تم حفظ معلومة جديدة في الذاكرة", "memory");
                     }
                 }
-            } catch (e) {
-                // فشل صامت - ليس مهماً
-            }
+            } catch (e) {}
         }
 
-        // عرض الرسائل مع التفكير العميق
         function appendMessageElement(text, sender) {
             const chatMessages = document.getElementById('chatMessages');
             const messageWrapper = document.createElement('div');
@@ -440,15 +423,11 @@
                         <div class="bot-icon">K</div>
                     </div>
                     <div class="message bot-loading">
-                        <div class="loading-dots">
-                            <span></span><span></span><span></span>
-                        </div>
+                        <div class="loading-dots"><span></span><span></span><span></span></div>
                     </div>
                 `;
             } else {
-                messageWrapper.innerHTML = `
-                    <div class="message system-error"><i class="fas fa-exclamation-triangle"></i> ${text}</div>
-                `;
+                messageWrapper.innerHTML = `<div class="message system-error"><i class="fas fa-exclamation-triangle"></i> ${text}</div>`;
             }
 
             chatMessages.appendChild(messageWrapper);
@@ -467,7 +446,6 @@
                 const parts = text.split(" /think ");
                 const thinkingBlock = parts[0].replace("_hresult think", "").trim();
                 const finalReplyBlock = parts[1].trim();
-
                 const id = 'think_' + Math.random().toString(36).substr(2, 9);
                 return `
                     <div class="thinking-container">
@@ -484,13 +462,9 @@
         }
 
         function formatMarkdown(text) {
-            // تنسيق بسيط
             let formatted = escapeHtml(text);
-            // Bold
             formatted = formatted.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-            // Code blocks
             formatted = formatted.replace(/```(\w*)\n?([\s\S]*?)```/g, '<div class="code-block"><div class="code-header"><span>$1</span><button onclick="copyCode(this)">نسخ</button></div><pre><code>$2</code></pre></div>');
-            // Inline code
             formatted = formatted.replace(/`(.*?)`/g, '<code class="inline-code">$1</code>');
             return formatted;
         }
@@ -502,7 +476,6 @@
             setTimeout(() => btn.innerText = "نسخ", 1500);
         };
 
-        // إشعارات Toast
         function showToast(message, type = "info") {
             const container = document.getElementById('toastContainer');
             const toast = document.createElement('div');
@@ -523,6 +496,7 @@
                 sendMessage();
             }
         };
+
         window.toggleSidebar = () => document.getElementById('sidebar').classList.toggle('collapsed');
         window.triggerFeature = (feature) => {
             const prompts = {
@@ -680,11 +654,7 @@
             color: #000;
         }
 
-        .brand-name {
-            font-weight: 700;
-            font-size: 16px;
-            letter-spacing: -0.5px;
-        }
+        .brand-name { font-weight: 700; font-size: 16px; letter-spacing: -0.5px; }
 
         .nav-tabs {
             display: flex;
@@ -867,7 +837,7 @@
 
         .logout-btn:hover { color: var(--danger); }
 
-        /* المحتوى الرئيسي */
+        /* المحتوى الرئيسي - تعديل مهم: layout عمودي مع مساحة للإدخال */
         .main-content {
             flex: 1;
             display: flex;
@@ -875,6 +845,7 @@
             position: relative;
             background: var(--bg-main);
             height: 100%;
+            overflow: hidden;
         }
 
         .top-bar {
@@ -888,6 +859,7 @@
             -webkit-backdrop-filter: blur(12px);
             position: relative;
             z-index: 10;
+            flex-shrink: 0;
         }
 
         .toggle-side {
@@ -947,15 +919,26 @@
 
         .top-action-btn:hover { background: rgba(255,255,255,0.05); color: var(--text-color); border-color: var(--border-color); }
 
+        /* منطقة المحتوى المتوسطة (ترحيب + رسائل) */
+        .content-area {
+            flex: 1;
+            overflow-y: auto;
+            position: relative;
+        }
+
+        .content-area::-webkit-scrollbar { width: 4px; }
+        .content-area::-webkit-scrollbar-track { background: transparent; }
+        .content-area::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 4px; }
+
         /* شاشة الترحيب */
         .welcome-screen {
-            flex: 1;
             display: flex;
             flex-direction: column;
             justify-content: center;
             align-items: center;
             text-align: center;
-            padding: 20px;
+            padding: 40px 20px;
+            min-height: 100%;
         }
 
         .welcome-greeting {
@@ -1026,17 +1009,12 @@
 
         /* الرسائل */
         .chat-messages {
-            flex: 1;
-            overflow-y: auto;
             display: none;
             flex-direction: column;
-            padding: 20px 0;
+            padding: 20px 0 20px;
             gap: 24px;
+            min-height: 100%;
         }
-
-        .chat-messages::-webkit-scrollbar { width: 4px; }
-        .chat-messages::-webkit-scrollbar-track { background: transparent; }
-        .chat-messages::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 4px; }
 
         .message-wrapper {
             display: flex;
@@ -1079,18 +1057,9 @@
         }
 
         .message.bot { color: var(--text-color); }
+        .message.bot-loading { color: var(--text-muted); font-size: 13px; }
 
-        .message.bot-loading {
-            color: var(--text-muted);
-            font-size: 13px;
-        }
-
-        .loading-dots {
-            display: flex;
-            gap: 6px;
-            padding: 8px 0;
-        }
-
+        .loading-dots { display: flex; gap: 6px; padding: 8px 0; }
         .loading-dots span {
             width: 8px;
             height: 8px;
@@ -1098,7 +1067,6 @@
             border-radius: 50%;
             animation: dotPulse 1.4s ease-in-out infinite;
         }
-
         .loading-dots span:nth-child(2) { animation-delay: 0.2s; }
         .loading-dots span:nth-child(3) { animation-delay: 0.4s; }
 
@@ -1146,12 +1114,7 @@
             color: var(--accent);
         }
 
-        .arrow-icon {
-            font-size: 10px;
-            color: var(--text-muted);
-            transition: transform 0.2s;
-        }
-
+        .arrow-icon { font-size: 10px; color: var(--text-muted); transition: transform 0.2s; }
         .arrow-icon.rotated { transform: rotate(180deg); }
 
         .thinking-body {
@@ -1166,7 +1129,6 @@
         }
 
         .thinking-body.expanded { display: block; }
-
         .final-text { margin-top: 4px; }
 
         /* كتل الكود */
@@ -1219,18 +1181,29 @@
             font-family: 'Courier New', monospace;
         }
 
-        /* صندوق الإدخال */
-        .input-wrapper-floating {
-            position: absolute;
-            bottom: 20px;
-            left: 50%;
-            transform: translateX(50%);
-            width: 100%;
-            max-width: 720px;
-            padding: 0 20px;
+        /* صندوق الإدخال - ثابت في الأسفل وليس مطلق */
+        .input-area {
+            flex-shrink: 0;
+            padding: 0 20px 20px;
             display: flex;
             flex-direction: column;
+            align-items: center;
             gap: 8px;
+            position: relative;
+            z-index: 20;
+            background: var(--bg-main);
+        }
+
+        .input-glow {
+            position: absolute;
+            bottom: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 60%;
+            height: 80px;
+            background: radial-gradient(ellipse, var(--accent-glow) 0%, transparent 70%);
+            pointer-events: none;
+            opacity: 0.5;
         }
 
         .file-badge {
@@ -1245,10 +1218,10 @@
             font-size: 12px;
             color: var(--text-secondary);
             margin-right: 8px;
+            max-width: 720px;
         }
 
         .file-badge i { color: var(--accent); }
-
         .file-badge button {
             background: transparent;
             border: none;
@@ -1267,11 +1240,13 @@
             align-items: center;
             gap: 10px;
             transition: border-color 0.2s, box-shadow 0.2s;
+            width: 100%;
+            max-width: 720px;
         }
 
         .input-container:focus-within {
             border-color: var(--accent-dim);
-            box-shadow: 0 0 0 3px var(--accent-glow);
+            box-shadow: 0 0 0 3px var(--accent-glow), 0 4px 20px rgba(6, 182, 212, 0.08);
         }
 
         .input-container input {
@@ -1279,10 +1254,11 @@
             background: transparent;
             border: none;
             color: var(--text-color);
-            padding: 10px 4px;
+            padding: 12px 4px;
             font-size: 14px;
             outline: none;
             font-family: 'Inter', sans-serif;
+            min-width: 0;
         }
 
         .input-container input::placeholder { color: var(--text-muted); }
@@ -1300,6 +1276,7 @@
             justify-content: center;
             border-radius: 10px;
             transition: all 0.15s;
+            flex-shrink: 0;
         }
 
         .icon-btn-left:hover { color: var(--text-color); background: rgba(255,255,255,0.06); }
@@ -1318,6 +1295,7 @@
             font-size: 14px;
             transition: all 0.15s;
             font-weight: 700;
+            flex-shrink: 0;
         }
 
         .send-btn:hover { background: #22d3ee; transform: scale(1.05); }
@@ -1359,10 +1337,7 @@
 
         .memory-panel-title i { color: var(--accent); }
 
-        .memory-panel-actions {
-            display: flex;
-            gap: 6px;
-        }
+        .memory-panel-actions { display: flex; gap: 6px; }
 
         .mem-action-btn {
             background: var(--bg-card);
@@ -1384,11 +1359,7 @@
         .mem-action-btn.save { background: var(--accent-glow); color: var(--accent); border-color: rgba(6, 182, 212, 0.3); }
         .mem-action-btn.save:hover { background: rgba(6, 182, 212, 0.2); }
 
-        .memory-panel-body {
-            flex: 1;
-            padding: 20px;
-            overflow-y: auto;
-        }
+        .memory-panel-body { flex: 1; padding: 20px; overflow-y: auto; }
 
         .memory-edit-area {
             width: 100%;
@@ -1470,8 +1441,6 @@
                 radial-gradient(circle at 80% 70%, rgba(168, 85, 247, 0.03) 0%, transparent 50%);
         }
 
-        .main-content > * { position: relative; z-index: 1; }
-
         /* شريط التمرير */
         .sidebar-menu::-webkit-scrollbar { width: 3px; }
         .sidebar-menu::-webkit-scrollbar-track { background: transparent; }
@@ -1483,7 +1452,7 @@
             .sidebar.collapsed { right: -270px; }
             .feature-cards { grid-template-columns: repeat(2, 1fr); }
             .welcome-greeting { font-size: 32px; }
-            .input-wrapper-floating { max-width: 100%; }
+            .input-area { padding: 0 12px 12px; }
             .message-wrapper { padding: 0 14px; }
             .memory-panel { width: 320px; right: -320px; }
         }
@@ -1536,7 +1505,6 @@
                     <span>محادثة جديدة</span>
                 </button>
 
-                <!-- قسم الذاكرة -->
                 <div class="memory-section" onclick="toggleMemoryPanel()">
                     <div class="memory-header">
                         <div class="memory-label"><i class="fas fa-brain"></i> الذاكرة</div>
@@ -1581,52 +1549,53 @@
                 </div>
             </div>
 
-            <!-- شاشة الترحيب -->
-            <div class="welcome-screen" id="welcomeScreen">
-                <div class="welcome-greeting">Hi, <span id="welcomeUserName">User</span></div>
-                <p class="welcome-sub" id="welcomeSub">تفاعل مع Keo Studio AI واستكشف العالم الإبداعي بلا حدود.</p>
+            <!-- منطقة المحتوى: ترحيب + رسائل -->
+            <div class="content-area" id="contentArea">
+                <div class="welcome-screen" id="welcomeScreen">
+                    <div class="welcome-greeting">Hi, <span id="welcomeUserName">User</span></div>
+                    <p class="welcome-sub" id="welcomeSub">تفاعل مع Keo Studio AI واستكشف العالم الإبداعي بلا حدود.</p>
 
-                <div class="feature-cards" id="featureCards">
-                    <div class="feature-card" onclick="triggerFeature('vision')">
-                        <div class="feature-icon"><i class="fas fa-eye"></i></div>
-                        <div class="feature-title">Keo Vision</div>
-                        <div class="feature-desc">تحليل الصور واستخراج النصوص</div>
-                    </div>
-                    <div class="feature-card" onclick="triggerFeature('image')">
-                        <div class="feature-icon"><i class="fas fa-palette"></i></div>
-                        <div class="feature-title">Keo Image</div>
-                        <div class="feature-desc">وصف وتصميم الصور الإبداعية</div>
-                    </div>
-                    <div class="feature-card" onclick="triggerFeature('audio')">
-                        <div class="feature-icon"><i class="fas fa-microphone"></i></div>
-                        <div class="feature-title">Keo Audio</div>
-                        <div class="feature-desc">تحويل النصوص إلى كلام</div>
-                    </div>
-                    <div class="feature-card" onclick="triggerFeature('code')">
-                        <div class="feature-icon"><i class="fas fa-code"></i></div>
-                        <div class="feature-title">Keo Code</div>
-                        <div class="feature-desc">مساعدة في تطوير الأكواد</div>
+                    <div class="feature-cards" id="featureCards">
+                        <div class="feature-card" onclick="triggerFeature('vision')">
+                            <div class="feature-icon"><i class="fas fa-eye"></i></div>
+                            <div class="feature-title">Keo Vision</div>
+                            <div class="feature-desc">تحليل الصور واستخراج النصوص</div>
+                        </div>
+                        <div class="feature-card" onclick="triggerFeature('image')">
+                            <div class="feature-icon"><i class="fas fa-palette"></i></div>
+                            <div class="feature-title">Keo Image</div>
+                            <div class="feature-desc">وصف وتصميم الصور الإبداعية</div>
+                        </div>
+                        <div class="feature-card" onclick="triggerFeature('audio')">
+                            <div class="feature-icon"><i class="fas fa-microphone"></i></div>
+                            <div class="feature-title">Keo Audio</div>
+                            <div class="feature-desc">تحويل النصوص إلى كلام</div>
+                        </div>
+                        <div class="feature-card" onclick="triggerFeature('code')">
+                            <div class="feature-icon"><i class="fas fa-code"></i></div>
+                            <div class="feature-title">Keo Code</div>
+                            <div class="feature-desc">مساعدة في تطوير الأكواد</div>
+                        </div>
                     </div>
                 </div>
+
+                <div class="chat-messages" id="chatMessages"></div>
             </div>
 
-            <!-- الرسائل -->
-            <div class="chat-messages" id="chatMessages"></div>
-
-            <!-- صندوق الإدخال -->
-            <div class="input-wrapper-floating">
+            <!-- صندوق الإدخال - الآن جزء عادي من الـ flex وليس مطلق -->
+            <div class="input-area">
+                <div class="input-glow"></div>
                 <div class="file-badge" id="fileBadge">
                     <i id="fileBadgeIcon" class="fas fa-image"></i>
                     <span id="fileBadgeText">image.png</span>
                     <button onclick="removeUploadedFile()"><i class="fas fa-xmark"></i></button>
                 </div>
-
                 <div class="input-container">
                     <input type="file" id="hiddenFileInput" style="display:none;" accept=".txt,.json,.csv,.js,.html,.css,.py,image/png,image/jpeg,image/jpg,image/webp" onchange="handleFileUpload(event)">
                     <button class="icon-btn-left" onclick="triggerFileUpload()" title="رفع ملف أو صورة" aria-label="رفع ملف">
                         <i class="fas fa-paperclip"></i>
                     </button>
-                    <input type="text" id="userInput" placeholder="How can I help you today?" onkeypress="handleKeyPress(event)">
+                    <input type="text" id="userInput" placeholder="How can I help you today?" onkeydown="handleKeyPress(event)">
                     <button class="send-btn" id="sendBtn" onclick="sendMessage()" aria-label="إرسال">
                         <i class="fas fa-arrow-up"></i>
                     </button>
