@@ -3,13 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Keo Studio AI</title>
+    <title>Keo Studio AI - المنصة الذكية</title>
     
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.1/firebase-app.js";
         import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.1/firebase-auth.js";
         import { getDatabase, ref, set, get, update, push, onValue } from "https://www.gstatic.com/firebasejs/9.22.1/firebase-database.js";
 
+        // إعدادات Firebase الخاصة بك
         const firebaseConfig = {
             apiKey: "AIzaSyB48E8FEkT2t_U9kUZYtWLJBxpCtMrAQZY",
             authDomain: "kimo-tecnology.firebaseapp.com",
@@ -30,8 +31,9 @@
         
         let currentChatId = null;
         let uploadedFileContent = ""; 
-        let currentMode = "chat"; // الوضع الافتراضي للمنصة
+        let currentMode = "chat"; // الوضع الافتراضي
 
+        // تسجيل الدخول
         window.loginWithGoogle = async () => {
             try {
                 const result = await signInWithPopup(auth, provider);
@@ -56,22 +58,23 @@
             }
         }
 
-        // التبديل بين الشات والـ Agent
+        // التبديل بين الشات العادي ووضع المطور
         window.switchMode = (mode) => {
             currentMode = mode;
             document.querySelectorAll('.nav-tab').forEach(tab => tab.classList.remove('active'));
             if (mode === 'chat') {
                 document.getElementById('chatTab').classList.add('active');
-                document.getElementById('modelTitle').innerText = "Keo-Agent-1.0 (DeepSeek R1) ▾";
+                document.getElementById('modelTitle').innerText = "Keo-Agent-1.0 (Llama 3.3) ▾";
                 document.getElementById('welcomeSub').innerText = "Interact with Keo Studio AI and explore the boundless creative world.";
             } else {
                 document.getElementById('agentTab').classList.add('active');
                 document.getElementById('modelTitle').innerText = "Keo Developer Agent (Full Permissions) ⚡";
-                document.getElementById('welcomeSub').innerText = "مرحباً بك في وضع الوكيل الذكي. هنا يمكنك رفع الأكواد، وطلب التنسيقات البرمجية والحلول الشاملة بصلاحيات كاملة.";
+                document.getElementById('welcomeSub').innerText = "مرحباً بك في وضع الوكيل الذكي. هنا يمكنك رفع الأكواد، وطلب الحلول الشاملة بصلاحيات كاملة.";
             }
             createNewChat();
         };
 
+        // مراقبة حالة المستخدم
         onAuthStateChanged(auth, (user) => {
             if (user) {
                 document.getElementById('authScreen').style.display = 'none';
@@ -133,6 +136,7 @@
             }
         }
 
+        // رفع الملفات
         window.triggerFileUpload = () => document.getElementById('hiddenFileInput').click();
         window.handleFileUpload = (event) => {
             const file = event.target.files[0];
@@ -151,6 +155,7 @@
             document.getElementById('hiddenFileInput').value = "";
         };
 
+        // إرسال الرسالة لـ Groq
         window.sendMessage = async () => {
             const userInput = document.getElementById('userInput');
             const messageText = userInput.value.trim();
@@ -185,10 +190,10 @@
 
             const loadingId = appendMessageElement('جاري استدعاء المعالج والتفكير بالحلول...', 'bot-loading');
 
-            // تخصيص التوجيه بناء على نوع الحوار (شات عادي أو وكيل مطور ذكي)
-            let systemInstruction = "You are Keo Studio AI, a high-fidelity intelligence assistant created by Karim Hussein.";
+            // إجبار الموديل على التفكير العميق باستخدام علامات <think>
+            let systemInstruction = "You are Keo Studio AI, a high-fidelity intelligence assistant created by Karim Hussein. You MUST always output your step-by-step reasoning inside <think> and </think> tags first, then output your final response.";
             if(currentMode === "agent") {
-                systemInstruction = "You are the Ultimate Keo Developer Agent. You have root-level permissions to design advanced systems, manage workflows, read uploaded source codes, fix client scripts, structure database configurations, and format responses flawlessly. Always provide comprehensive code structures when requested.";
+                systemInstruction = "You are the Ultimate Keo Developer Agent. You have root-level permissions to design advanced systems, manage workflows, read uploaded source codes, and fix client scripts. You MUST always output your step-by-step reasoning inside <think> and </think> tags first, then output your final response.";
             }
 
             try {
@@ -199,7 +204,7 @@
                         'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({
-                        model: "deepseek-r1-distill-llama-70b", // الموديل المعتمد والمتاح رسمياً بدون أخطاء الـ 400
+                        model: "llama-3.3-70b-versatile", // الموديل المستقر لتفادي خطأ 400
                         messages: [
                             { "role": "user", "content": `${systemInstruction}\n\nUser Question: ${finalPromptToSend}` }
                         ],
@@ -223,6 +228,7 @@
             }
         };
 
+        // عرض الرسائل وفصل التفكير العميق
         function appendMessageElement(text, sender) {
             const chatMessages = document.getElementById('chatMessages');
             const messageWrapper = document.createElement('div');
@@ -232,7 +238,6 @@
             messageDiv.className = `message ${sender}`;
 
             if (sender === 'bot') {
-                // تصفية وفصل التفكير العميق عن النص الأساسي بشكل تلقائي
                 if (text.includes("<think>") && text.includes("</think>")) {
                     const parts = text.split("</think>");
                     const thinkingBlock = parts[0].replace("<think>", "").trim();
@@ -242,7 +247,7 @@
                     messageDiv.innerHTML = `
                         <div class="thinking-container">
                             <div class="thinking-header" onclick="document.getElementById('${id}').classList.toggle('expanded')">
-                                <span>🧠 تم التفكير (اضغط لاستعراض الخطوات البرمجية)</span>
+                                <span>🧠 تم التفكير (اضغط لاستعراض الخطوات)</span>
                                 <span style="font-size:10px;">▼</span>
                             </div>
                             <div class="thinking-body" id="${id}">${thinkingBlock}</div>
@@ -283,7 +288,6 @@
 
         .app-container { display: none; width: 100%; height: 100%; }
         
-        /*Sidebar التبديل الاحترافي */
         .sidebar { width: 260px; background-color: var(--bg-sidebar); border-left: 1px solid var(--border-color); display: flex; flex-direction: column; padding: 16px; justify-content: space-between; transition: 0.25s ease-in-out; }
         .sidebar.collapsed { width: 0; padding: 0; overflow: hidden; border-left: none; }
         
@@ -302,7 +306,6 @@
         .user-info { display: flex; align-items: center; gap: 10px; }
         .user-avatar { width: 32px; height: 32px; border-radius: 50%; background: #333; object-fit: cover; }
 
-        /* منطقة العمل الرئيسية العائمة بالكامل في المنتصف */
         .main-content { flex: 1; display: flex; flex-direction: column; position: relative; background: var(--bg-main); height: 100%; }
         
         .top-bar { padding: 14px 24px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #ffffff02; }
@@ -313,10 +316,9 @@
         .welcome-screen h1 { font-size: 40px; font-weight: 500; margin-bottom: 10px; letter-spacing: -0.5px; }
         .welcome-screen p { color: var(--text-muted); font-size: 14.5px; max-width: 500px; line-height: 1.5; }
 
-        /* محاذاة الشات وتمركزه بوسط الشاشة تماماً مثل المنصات العالمية */
         .chat-messages { flex: 1; overflow-y: auto; display: none; flex-direction: column; padding: 20px 22% 140px; gap: 32px; }
         .message-wrapper { display: flex; width: 100%; }
-        .message-wrapper.user { justify-content: flex-end; } /* رسايل المستخدم على اليمين لمنع اللخبطة */
+        .message-wrapper.user { justify-content: flex-end; } 
         .message-wrapper.bot { justify-content: flex-start; }
         
         .message { max-width: 85%; font-size: 15.5px; line-height: 1.65; word-wrap: break-word; white-space: pre-line; }
@@ -325,13 +327,14 @@
         .message.bot-loading { color: var(--text-muted); font-size: 13px; font-style: italic; }
         .message.system-error { color: #ff5252; font-size: 13.5px; font-weight: bold; }
 
-        /* حاوية زر التفكير العميق المنبثق الأنيق */
+        /* ستايل زر التفكير العميق */
         .thinking-container { margin-bottom: 15px; border-right: 2px solid #2a2a2a; padding-right: 12px; background: #ffffff02; padding: 10px; border-radius: 8px; }
         .thinking-header { color: #81a1c1; font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 8px; user-select: none; font-weight: 500; }
-        .thinking-body { font-size: 13px; color: var(--text-muted); display: none; margin-top: 8px; line-height: 1.6; border-top: 1px solid #ffffff05; padding-top: 8px; }
+        .thinking-body { font-size: 13px; color: var(--text-muted); display: none; margin-top: 8px; line-height: 1.6; border-top: 1px solid #ffffff05; padding-top: 8px; white-space: pre-wrap; }
         .thinking-body.expanded { display: block; }
+        .final-text { margin-top: 10px; }
 
-        /* مستوعب صندوق الإدخال الطاير المتناسق */
+        /* صندوق الإدخال العائم */
         .input-wrapper-floating { position: absolute; bottom: 28px; left: 22%; right: 22%; display: flex; flex-direction: column; gap: 8px; }
         .input-container { background: var(--pill-input-bg); border: 1px solid var(--border-color); border-radius: 28px; padding: 6px 14px; display: flex; align-items: center; gap: 12px; }
         .input-container input { flex: 1; background: transparent; border: none; color: var(--text-color); padding: 12px 4px; font-size: 14.5px; outline: none; }
@@ -386,7 +389,7 @@
             
             <div class="top-bar">
                 <button class="toggle-side" onclick="toggleSidebar()">☰</button>
-                <div class="model-selector" id="modelTitle">Keo-Agent-1.0 (DeepSeek R1) ▾</div>
+                <div class="model-selector" id="modelTitle">Keo-Agent-1.0 (Llama 3.3) ▾</div>
                 <div style="width:20px;"></div>
             </div>
             
